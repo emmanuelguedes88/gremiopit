@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Grêmio PIT - Controle Financeiro</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     
     <script>
         tailwind.config = {
@@ -12,14 +13,14 @@
                 extend: {
                     colors: {
                         brand: {
-                            dark: '#0F172A',
-                            panel: '#1E293B',
+                            dark: '#020617',
+                            panel: '#0F172A',
                             text: '#F8FAFC',
                             muted: '#94A3B8',
                             accent: '#3B82F6',
                             success: '#10B981',
-                            danger: '#F43F5E',
-                            warning: '#F59E0B'
+                            danger: '#EF4444',
+                            warning: '#EAB308'
                         }
                     }
                 }
@@ -28,28 +29,62 @@
     </script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #0F172A; color: #F8FAFC; }
-        /* Scrollbar customizada e elegante */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #020617; color: #F8FAFC; overflow-x: hidden; }
+        
         ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: #0F172A; }
+        ::-webkit-scrollbar-track { background: #020617; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #475569; }
-        /* Remove setas de input number */
+        
         input[type=number]::-webkit-inner-spin-button, 
         input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        
+        @keyframes fall {
+            0% { transform: translateY(-10vh) rotate(0deg); opacity: 0; }
+            10% { opacity: 0.15; }
+            90% { opacity: 0.15; }
+            100% { transform: translateY(100vh) rotate(360deg); opacity: 0; }
+        }
+        .falling-item {
+            position: absolute;
+            top: -10%;
+            pointer-events: none;
+            z-index: 0;
+            animation: fall linear infinite;
+            filter: drop-shadow(0 0 5px rgba(255,255,255,0.1));
+        }
     </style>
 </head>
-<body class="bg-brand-dark min-h-screen text-brand-text flex flex-col md:flex-row md:h-screen md:overflow-hidden">
+<body class="bg-brand-dark min-h-screen text-brand-text flex flex-col md:flex-row md:h-screen md:overflow-hidden relative">
     
-    <!-- Div onde toda a interface será injetada -->
-    <div id="app" class="w-full flex flex-col md:flex-row h-full"></div>
+    <div id="bg-animation" class="fixed inset-0 pointer-events-none overflow-hidden z-0"></div>
+    <div id="app" class="w-full flex flex-col md:flex-row h-full relative z-10"></div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const container = document.getElementById('bg-animation');
+            const items = ['🚓', '🔗', '🔫', '🚨', '🚔', '🛡️', '👮‍♂️'];
+            const numItems = 20;
+            for (let i = 0; i < numItems; i++) {
+                let el = document.createElement('div');
+                el.innerText = items[Math.floor(Math.random() * items.length)];
+                el.className = 'falling-item';
+                el.style.left = Math.random() * 100 + 'vw';
+                el.style.animationDuration = (Math.random() * 15 + 10) + 's'; 
+                el.style.animationDelay = (Math.random() * 10) + 's';
+                el.style.fontSize = (Math.random() * 15 + 20) + 'px';
+                el.style.opacity = '0.05';
+                container.appendChild(el);
+            }
+        });
+    </script>
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
         import { getFirestore, collection, onSnapshot, addDoc, doc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
         import { getAuth, signInAnonymously, signInWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-auth.js";
 
-        // Substitua por suas configurações do Firebase
         const firebaseConfig = {
           apiKey: "AIzaSyBs6l1WQx4ePd2IkY0RdfxR75XCJm13m08",
           authDomain: "gremiopit-3250c.firebaseapp.com",
@@ -66,39 +101,59 @@
         const APP_ID = 'gremiopit-v1';
         
         const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        const currentMonthName = MONTHS[new Date().getMonth()];
         
         let state = {
             activeTab: 'dashboard',
-            selectedMonth: 'Jan',
+            selectedMonth: currentMonthName,
             user: null,
             isAdmin: false,
             members: [],
             transactions: [],
+            logs: [], // Auditoria restaurada
             showLoginModal: false,
             loginEmail: '',
             loginPassword: '',
             loginError: '',
             isResetting: false,
             dbError: null,
-            /* Novos estados para controle de visualização dos membros */
-            memberViewMode: window.innerWidth < 768 ? 'single' : 'all',
-            filterPaidOnly: false
+            
+            // Novas configurações
+            membersViewMode: window.innerWidth < 768 ? 'monthly' : 'panorama', // Panorama vs Mensal
+            showReceiptModal: false,
+            receiptTx: null,
+            isEditingReceiptSettings: false,
+            adminReceiptInfo: JSON.parse(localStorage.getItem('gremio_admin_receipt_info') || '{"name":"","matricula":"","signatureDataUrl":""}'),
+            generatedReceiptFile: null
         };
 
-        // Exposing state globally so inline HTML events (like onchange) can access it
         window.state = state;
 
         let unsubMembers = null;
         let unsubTrans = null;
-        let isTransitioningAuth = false; // Previne piscar erro de banco de dados ao deslogar
+        let unsubLogs = null;
+        let isTransitioningAuth = false;
+
+        const formatCurrency = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+
+        const logAction = async (actionText) => {
+            try {
+                await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'logs'), {
+                    action: actionText,
+                    date: new Date().toLocaleString('pt-BR'),
+                    createdAt: Date.now()
+                });
+            } catch (error) { console.error("Erro ao salvar log", error); }
+        };
 
         function setupListeners() {
-            // Limpa os ouvintes antigos se existirem
             if (unsubMembers) unsubMembers();
             if (unsubTrans) unsubTrans();
+            if (unsubLogs) unsubLogs(); // Restaurado
 
             const membersRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'members');
             const transRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions');
+            const logsRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'logs');
 
             unsubMembers = onSnapshot(membersRef, (snapshot) => {
                 if(isTransitioningAuth) return;
@@ -121,19 +176,24 @@
                 if(error.code === 'permission-denied') state.dbError = 'permission';
                 render();
             });
+
+            // Reativando a escuta da auditoria
+            unsubLogs = onSnapshot(logsRef, (snapshot) => {
+                if(isTransitioningAuth) return;
+                state.logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); 
+                render();
+            });
         }
 
         onAuthStateChanged(auth, (user) => {
             isTransitioningAuth = false;
             if (user) {
                 state.user = user;
-                // Se não for anônimo, logou com email (é o Administrador)
                 state.isAdmin = !user.isAnonymous; 
                 setupListeners();
             } else {
                 state.user = null;
                 state.isAdmin = false;
-                // Tenta login anônimo automático (Público)
                 signInAnonymously(auth).catch((err) => {
                     console.warn("Autenticação anônima desabilitada.");
                     state.dbError = 'auth-anon-disabled';
@@ -167,7 +227,7 @@
             }
             try {
                 await sendPasswordResetEmail(auth, state.loginEmail);
-                state.loginError = 'E-mail de recuperação enviado! Verifique sua caixa de entrada.';
+                state.loginError = 'E-mail enviado! Verifique sua caixa de entrada.';
                 render();
             } catch(error) {
                 state.loginError = 'Erro ao enviar. O e-mail está correto?';
@@ -179,6 +239,7 @@
             isTransitioningAuth = true;
             if(unsubMembers) unsubMembers();
             if(unsubTrans) unsubTrans();
+            if(unsubLogs) unsubLogs();
             await signOut(auth);
         };
 
@@ -195,6 +256,7 @@
                     payments: {},
                     createdAt: Date.now()
                 });
+                logAction(`Novo Policial adicionado: ${name}`);
             } catch (error) { console.error(error); }
         };
 
@@ -204,35 +266,31 @@
             if (!member) return;
             
             const isCurrentlyPaid = (member.payments || {})[month];
-            const newValue = !isCurrentlyPaid;
+            const newStatus = !isCurrentlyPaid;
 
             try {
-                // Atualiza o status de pagamento do membro
                 await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'members', memberId), {
-                    [`payments.${month}`]: newValue
+                    [`payments.${month}`]: newStatus
                 });
 
-                // Lógica Nova: Adicionar/Remover Receita de 10 reais automaticamente
-                if (newValue) {
+                if (newStatus) {
                     await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'), {
                         type: 'income',
-                        description: member.name,
+                        description: member.name, 
                         amount: 10,
                         month: month,
-                        createdAt: Date.now(),
-                        isMensalidade: true, // Identificador para sistema
-                        memberId: member.id  // Identificador do usuário
+                        date: new Date().toLocaleDateString('pt-BR'),
+                        isAuto: true,
+                        memberId: member.id,
+                        createdAt: Date.now()
                     });
+                    logAction(`Pagamento confirmado para ${member.name} (Ref: ${month})`);
                 } else {
-                    // Se desmarcou, procuramos a transação automática e a excluímos
-                    const transToDelete = state.transactions.find(t => 
-                        t.isMensalidade === true && 
-                        t.memberId === member.id && 
-                        t.month === month
-                    );
-                    if (transToDelete) {
-                        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', transToDelete.id));
+                    const txToDelete = state.transactions.find(t => t.isAuto && t.memberId === member.id && t.month === month);
+                    if (txToDelete) {
+                        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', txToDelete.id));
                     }
+                    logAction(`Pagamento estornado de ${member.name} (Ref: ${month})`);
                 }
 
             } catch (error) { console.error(error); }
@@ -240,7 +298,11 @@
 
         window.handleDeleteMember = async (id) => {
             if (!state.user || !state.isAdmin) return;
-            try { await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'members', id)); } catch(e) {}
+            const member = state.members.find(m => m.id === id);
+            try { 
+                await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'members', id)); 
+                if(member) logAction(`Policial removido: ${member.name}`);
+            } catch(e) {}
         };
 
         window.handleAddTransaction = async (e) => {
@@ -248,298 +310,467 @@
             const type = document.querySelector('input[name="transType"]:checked').value;
             const desc = document.getElementById('newTransDesc').value;
             const amount = document.getElementById('newTransAmount').value;
-            const product = document.getElementById('newTransProduct') ? document.getElementById('newTransProduct').value : '';
-            
-            const dateInput = document.getElementById('newTransDate') ? document.getElementById('newTransDate').value : '';
-            let createdAt = Date.now();
-            if (dateInput) {
-                // Seta a data considerando meio-dia para evitar deslocamento de fuso-horário
-                createdAt = new Date(dateInput + 'T12:00:00').getTime();
-            }
+            const dateInput = document.getElementById('newTransDate').value;
             
             if (!desc || !amount || !state.user) return;
             
+            let formattedDate = new Date().toLocaleDateString('pt-BR');
+            // Se o usuário selecionou uma data retroativa, usamos ela
+            if (dateInput) {
+                const d = new Date(dateInput);
+                formattedDate = new Date(d.getTime() + d.getTimezoneOffset() * 60000).toLocaleDateString('pt-BR');
+            }
+
             try {
                 await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'), {
                     type,
                     description: desc,
                     amount: parseFloat(amount),
                     month: state.selectedMonth,
-                    product: type === 'expense' ? product : '',
-                    createdAt: createdAt
+                    date: formattedDate,
+                    createdAt: DateInput ? new Date(dateInput).getTime() : Date.now() // Preserva tempo correto se editado
                 });
+                logAction(`Registro (${type === 'income' ? 'Receita' : 'Despesa'}): ${desc} - R$ ${amount}`);
             } catch(e) {}
         };
 
         window.handleDeleteTransaction = async (id) => {
             if (!state.user || !state.isAdmin) return;
-            try { await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', id)); } catch(e) {}
+            const tx = state.transactions.find(t => t.id === id);
+            try { 
+                await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', id)); 
+                if(tx) logAction(`Estorno realizado: ${tx.description}`);
+            } catch(e) {}
         };
 
-        // Window Helper Functions to bridge Vanilla HTML and module state
-        window.setTab = (tab) => { 
-            state.activeTab = tab; 
-            render(); 
-            // Faz a rolagem suave para baixo em celulares ao trocar de aba
-            if (window.innerWidth < 768) {
-                document.getElementById('main-content')?.scrollIntoView({ behavior: 'smooth' });
+        window.exportReport = function() {
+            const m = state.selectedMonth;
+            const t = state.transactions.filter(x => x.month === m);
+            const income = t.filter(x => x.type === 'income').reduce((a,b) => a + b.amount, 0);
+            const expense = t.filter(x => x.type === 'expense').reduce((a,b) => a + b.amount, 0);
+            const balance = income - expense;
+
+            const text = `*RELATÓRIO DE CAIXA - GRÊMIO PIT* 🚔\n\n` +
+                         `*Mês Ref:* ${m}\n` +
+                         `*Efetivo Registrado:* ${state.members.length} policiais\n\n` +
+                         `📊 *BALANÇO:*\n` +
+                         `🟢 *Arrecadação:* ${formatCurrency(income)}\n` +
+                         `🔴 *Despesas:* ${formatCurrency(expense)}\n` +
+                         `${balance >= 0 ? '🔵' : '🔴'} *SALDO DO MÊS:* ${formatCurrency(balance)}\n\n` +
+                         `_Resumo gerado automaticamente pelo Sistema._`;
+            
+            const encoded = encodeURIComponent(text);
+            window.open(`https://wa.me/?text=${encoded}`, '_blank');
+            logAction(`Relatório do mês de ${m} exportado para o WhatsApp.`);
+        };
+
+        window.openReceiptModal = (id) => {
+            const tx = state.transactions.find(t => t.id === id);
+            if(!tx) return;
+            state.receiptTx = tx;
+            state.generatedReceiptFile = null;
+            
+            // Se nunca preencheu dados, abre modo de edição automaticamente
+            if (!state.adminReceiptInfo.name || !state.adminReceiptInfo.signatureDataUrl) {
+                state.isEditingReceiptSettings = true;
+            } else {
+                state.isEditingReceiptSettings = false;
+            }
+            
+            state.showReceiptModal = true;
+            render();
+        };
+
+        window.closeReceiptModal = () => {
+            state.showReceiptModal = false;
+            state.receiptTx = null;
+            state.generatedReceiptFile = null;
+            render();
+        };
+
+        window.toggleEditReceiptSettings = () => {
+            state.isEditingReceiptSettings = !state.isEditingReceiptSettings;
+            state.generatedReceiptFile = null;
+            render();
+        };
+
+        window.saveReceiptSettings = () => {
+            const name = document.getElementById('admin-name-input').value;
+            const mat = document.getElementById('admin-mat-input').value;
+            const canvas = document.getElementById('signaturePad');
+            
+            if(!name || !mat) {
+                alert("Preencha seu Nome e Matrícula.");
+                return;
+            }
+
+            state.adminReceiptInfo.name = name;
+            state.adminReceiptInfo.matricula = mat;
+            state.adminReceiptInfo.signatureDataUrl = canvas.toDataURL('image/png');
+            
+            localStorage.setItem('gremio_admin_receipt_info', JSON.stringify(state.adminReceiptInfo));
+            state.isEditingReceiptSettings = false;
+            render();
+        };
+
+        window.clearSignature = () => {
+            const canvas = document.getElementById('signaturePad');
+            if (canvas) {
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
             }
         };
+
+        window.initSignatureCanvas = () => {
+            const canvas = document.getElementById('signaturePad');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            ctx.strokeStyle = '#020617'; 
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            let drawing = false;
+
+            // Preenche o fundo de branco puro para o canvas
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Carrega assinatura prévia se existir
+            if(state.adminReceiptInfo.signatureDataUrl) {
+                const img = new Image();
+                img.onload = () => ctx.drawImage(img, 0, 0);
+                img.src = state.adminReceiptInfo.signatureDataUrl;
+            }
+
+            const getPos = (e) => {
+                const rect = canvas.getBoundingClientRect();
+                // Calcula a escala para garantir precisão do traço independentemente do tamanho da tela do celular
+                const scaleX = canvas.width / rect.width;
+                const scaleY = canvas.height / rect.height;
+                const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+                const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+                return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+            };
+
+            const start = (e) => { 
+                e.preventDefault(); 
+                // Fecha o teclado do celular para não atrapalhar o desenho
+                if(document.activeElement) document.activeElement.blur(); 
+                drawing = true; 
+                const pos = getPos(e); 
+                ctx.beginPath(); 
+                ctx.moveTo(pos.x, pos.y); 
+            };
+            const draw = (e) => { e.preventDefault(); if(!drawing) return; const pos = getPos(e); ctx.lineTo(pos.x, pos.y); ctx.stroke(); };
+            const stop = (e) => { e.preventDefault(); drawing = false; };
+
+            canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stop); canvas.addEventListener('mouseout', stop);
+            canvas.addEventListener('touchstart', start, {passive: false});
+            canvas.addEventListener('touchmove', draw, {passive: false});
+            canvas.addEventListener('touchend', stop);
+        };
+
+        window.shareReceiptImage = async () => {
+            // Se a imagem já foi gerada no primeiro clique, faz o envio direto no segundo clique (Evita bloqueio de segurança do Navegador)
+            if (state.generatedReceiptFile) {
+                if (navigator.canShare && navigator.canShare({ files: [state.generatedReceiptFile] })) {
+                    try {
+                        await navigator.share({
+                            files: [state.generatedReceiptFile],
+                            title: 'Recibo PIT',
+                            text: 'Segue em anexo o recibo da movimentação.'
+                        });
+                    } catch(e) { console.error("Cancelado ou erro no share", e); }
+                } else {
+                    const url = URL.createObjectURL(state.generatedReceiptFile);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'recibo-pit.png';
+                    a.click();
+                    alert('Recibo salvo no dispositivo! Agora é só anexar no WhatsApp.');
+                }
+                return;
+            }
+
+            // Primeiro clique: Inicia a geração da Imagem
+            const btn = document.getElementById('btn-share-receipt');
+            const origHTML = btn.innerHTML;
+            btn.innerHTML = '<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i> Processando Imagem...';
+            btn.disabled = true;
+            
+            const element = document.getElementById('receipt-capture-area');
+            
+            // Remove limites de rolagem temporariamente para evitar corte na imagem gerada (Bug de altura)
+            const modalContainer = element.closest('.max-h-\\[90vh\\]');
+            const scrollContainer = element.closest('.overflow-y-auto');
+            if(modalContainer) modalContainer.style.maxHeight = 'none';
+            if(scrollContainer) scrollContainer.style.overflow = 'visible';
+            
+            try {
+                // Gera a imagem capturando o design HTML do recibo em alta definição
+                const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
+                
+                // Restaura os limites de rolagem da tela
+                if(modalContainer) modalContainer.style.maxHeight = '';
+                if(scrollContainer) scrollContainer.style.overflow = '';
+
+                canvas.toBlob(async (blob) => {
+                    const file = new File([blob], 'recibo-pit.png', { type: 'image/png' });
+                    state.generatedReceiptFile = file; // Salva para o próximo clique
+                    
+                    // Transforma o botão para a liberação do Share nativo
+                    btn.disabled = false;
+                    btn.innerHTML = '<i data-lucide="send" class="w-5 h-5"></i> Recibo Pronto! Clique para Enviar';
+                    btn.classList.remove('bg-[#10B981]', 'hover:bg-green-600');
+                    btn.classList.add('bg-brand-accent', 'hover:bg-blue-600');
+                    lucide.createIcons();
+                }, 'image/png');
+            } catch (err) {
+                console.error(err);
+                btn.disabled = false;
+                btn.innerHTML = origHTML;
+                lucide.createIcons();
+            }
+        };
+
+        window.setTab = (tab) => { state.activeTab = tab; render(); };
         window.setMonth = (month) => { state.selectedMonth = month; render(); };
         window.toggleModal = (show) => { state.showLoginModal = show; state.loginError = ''; render(); };
         window.toggleReset = (reset) => { state.isResetting = reset; state.loginError = ''; render(); };
-        
-        // Novos Helpers para controle de visualização dos membros
-        window.setMemberView = (mode) => { state.memberViewMode = mode; render(); };
-        window.setFilterPaidOnly = (val) => { state.filterPaidOnly = val; render(); };
-        
-        const formatCurrency = (val) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+        window.toggleMembersViewMode = () => { state.membersViewMode = state.membersViewMode === 'panorama' ? 'monthly' : 'panorama'; render(); };
 
         function render() {
-            const appDiv = document.getElementById('app');
+            const app = document.getElementById('app');
             
-            // Calculos de saldo atuais
-            const monthTrans = state.transactions.filter(t => t.month === state.selectedMonth);
-            const totalIncome = monthTrans.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
-            const totalExpense = monthTrans.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
-            const balance = totalIncome - totalExpense;
+            const filteredTransactions = state.transactions.filter(t => t.month === state.selectedMonth);
+            const income = filteredTransactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
+            const expenses = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
             
             const allIncome = state.transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
             const allExpense = state.transactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + curr.amount, 0);
-            const totalBalance = allIncome - allExpense;
+            const totalBoxBalance = allIncome - allExpense;
 
-            // Novos Cálculos para o Dashboard
             const monthIndex = MONTHS.indexOf(state.selectedMonth);
-            let prevIncome = 0;
-            let prevExpense = 0;
-            state.transactions.forEach(t => {
-                const tMonthIdx = MONTHS.indexOf(t.month);
-                if (tMonthIdx !== -1 && tMonthIdx < monthIndex) {
-                    if (t.type === 'income') prevIncome += t.amount;
-                    if (t.type === 'expense') prevExpense += t.amount;
-                }
-            });
-            const previousBalance = prevIncome - prevExpense;
-            const currentMonthMensalidades = monthTrans.filter(t => t.type === 'income' && t.isMensalidade).reduce((acc, curr) => acc + curr.amount, 0);
-            const currentMonthOtherIncome = totalIncome - currentMonthMensalidades;
+            const prevMonths = MONTHS.slice(0, monthIndex);
+            const prevTrans = state.transactions.filter(t => prevMonths.includes(t.month));
+            const prevIncome = prevTrans.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0);
+            const prevExpense = prevTrans.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0);
+            const prevBalance = prevIncome - prevExpense;
 
             let content = `
             <!-- Sidebar -->
-            <nav class="w-full md:w-64 bg-brand-panel p-6 shadow-2xl flex flex-col justify-between shrink-0 border-r border-brand-muted/10 z-20">
-                <div>
-                    <div class="flex items-center gap-3 mb-10 group cursor-default">
-                        <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-brand-accent to-blue-800 flex items-center justify-center shadow-lg border border-brand-accent/30">
-                            <span class="font-bold text-xl text-white tracking-wider">PIT</span>
-                        </div>
-                        <div>
-                            <h1 class="font-bold text-xl leading-tight text-white">Grêmio PIT</h1>
-                            <p class="text-xs text-brand-muted tracking-widest uppercase">Financeiro</p>
-                        </div>
+            <nav class="w-full md:w-64 bg-brand-panel p-6 shadow-2xl flex flex-col shrink-0 border-r border-brand-muted/10 z-20 overflow-y-auto">
+                <div class="flex items-center gap-3 mb-10 group cursor-default">
+                    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-[#1E293B] to-[#0F172A] flex items-center justify-center shadow-lg border-2 border-[#EAB308]">
+                        <i data-lucide="shield-half" class="text-[#EAB308] w-7 h-7"></i>
                     </div>
-
-                    <div class="space-y-2">
-                        <button onclick="setTab('dashboard')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'dashboard' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                            <i data-lucide="trending-up" class="${state.activeTab === 'dashboard' ? 'text-brand-accent' : 'text-brand-muted'} w-5 h-5"></i>
-                            <span class="font-medium">Visão Geral</span>
-                        </button>
-                        <button onclick="setTab('members')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'members' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                            <i data-lucide="users" class="${state.activeTab === 'members' ? 'text-brand-accent' : 'text-brand-muted'} w-5 h-5"></i>
-                            <span class="font-medium">Contribuintes</span>
-                        </button>
-                        <button onclick="setTab('transactions')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'transactions' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                            <i data-lucide="wallet" class="${state.activeTab === 'transactions' ? 'text-brand-accent' : 'text-brand-muted'} w-5 h-5"></i>
-                            <span class="font-medium">Fluxo de Caixa</span>
-                        </button>
-                    </div>
-
-                    <div class="mt-8 pt-6 border-t border-brand-dark">
-                        ${!state.isAdmin ? `
-                            <button onclick="toggleModal(true)" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-brand-muted hover:bg-brand-dark transition-colors">
-                                <i data-lucide="lock" class="w-5 h-5"></i>
-                                <span class="font-medium">Acesso Admin</span>
-                            </button>
-                        ` : `
-                            <button onclick="handleLogout()" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-brand-danger/10 text-brand-danger hover:bg-brand-danger/20 transition-all border border-brand-danger/30">
-                                <i data-lucide="unlock" class="w-5 h-5"></i>
-                                <span class="font-medium">Sair (Admin)</span>
-                            </button>
-                        `}
+                    <div>
+                        <h1 class="font-bold text-xl leading-tight text-white flex items-center gap-2">Grêmio PIT</h1>
+                        <p class="text-xs text-[#EAB308] font-bold tracking-widest uppercase">Controle Financeiro</p>
                     </div>
                 </div>
 
-                <div class="mt-10 p-4 bg-brand-dark rounded-xl border border-brand-muted/20">
-                    <p class="text-xs text-brand-muted mb-1">Saldo Acumulado</p>
-                    <p class="text-lg font-bold ${totalBalance >= 0 ? 'text-brand-success' : 'text-brand-danger'}">
-                        ${formatCurrency(totalBalance)}
-                    </p>
+                <div class="space-y-2 flex-grow">
+                    <button onclick="setTab('dashboard')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'dashboard' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
+                        <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
+                        <span class="font-medium">Visão Geral</span>
+                    </button>
+                    <button onclick="setTab('members')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'members' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
+                        <i data-lucide="users" class="w-5 h-5"></i>
+                        <span class="font-medium">Contribuintes</span>
+                    </button>
+                    <button onclick="setTab('transactions')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'transactions' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
+                        <i data-lucide="landmark" class="w-5 h-5"></i>
+                        <span class="font-medium">Fluxo de Caixa</span>
+                    </button>
+                    <button onclick="setTab('audit')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'audit' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
+                        <i data-lucide="clipboard-list" class="w-5 h-5"></i>
+                        <span class="font-medium">Auditoria</span>
+                    </button>
+                </div>
+
+                <div class="mt-8 pt-6 border-t border-brand-dark">
+                    ${!state.isAdmin ? `
+                        <button onclick="toggleModal(true)" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-brand-muted hover:bg-brand-dark transition-colors">
+                            <i data-lucide="lock" class="w-5 h-5"></i>
+                            <span class="font-medium">Acesso Admin</span>
+                        </button>
+                    ` : `
+                        <button onclick="handleLogout()" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg bg-brand-danger/10 text-brand-danger hover:bg-brand-danger/20 transition-all border border-brand-danger/30">
+                            <i data-lucide="unlock" class="w-5 h-5"></i>
+                            <span class="font-medium">Sair (Admin)</span>
+                        </button>
+                    `}
                 </div>
             </nav>
-            `;
 
-            content += `
-            <main id="main-content" class="flex-1 p-4 md:p-8 relative w-full h-full md:overflow-y-auto">
-                <!-- Erros de Configuração -->
+            <!-- Main Content -->
+            <main class="flex-1 p-6 md:p-10 overflow-y-auto z-10 relative">
+                
                 ${state.dbError === 'permission' ? `
                     <div class="mb-6 bg-brand-warning/10 border border-brand-warning/40 text-brand-warning p-4 rounded-xl flex items-start gap-3">
                         <i data-lucide="alert-triangle" class="w-6 h-6 flex-shrink-0 mt-1"></i>
                         <div>
                             <h4 class="font-bold text-lg">Acesso Bloqueado no Firebase!</h4>
-                            <p class="text-sm opacity-90 mt-1">As regras de segurança do seu banco de dados estão bloqueando a leitura. Vá no painel do Firebase em "Firestore Database > Regras" e aplique <code>allow read, write: if request.auth != null;</code></p>
+                            <p class="text-sm opacity-90 mt-1">Permita leitura/escrita nas regras do Firestore.</p>
                         </div>
                     </div>
                 ` : ''}
 
-                <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+                <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 bg-brand-panel/50 p-6 rounded-2xl border border-white/5 backdrop-blur-sm">
                     <div>
-                        <h2 class="text-3xl font-extrabold tracking-tight text-white">
-                            ${state.activeTab === 'dashboard' ? 'Visão Geral' : state.activeTab === 'members' ? 'Controle de Contribuintes' : 'Fluxo de Caixa'}
+                        <h2 class="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+                            ${state.activeTab === 'dashboard' ? '<i data-lucide="layout-dashboard" class="w-8 h-8 text-[#EAB308]"></i> Visão Geral' : 
+                              state.activeTab === 'members' ? '<i data-lucide="users" class="w-8 h-8 text-[#EAB308]"></i> Contribuintes' : 
+                              state.activeTab === 'audit' ? '<i data-lucide="clipboard-list" class="w-8 h-8 text-[#EAB308]"></i> Auditoria' : 
+                              '<i data-lucide="landmark" class="w-8 h-8 text-[#EAB308]"></i> Fluxo de Caixa'}
                         </h2>
                     </div>
-                    <div class="flex items-center bg-brand-panel p-1 rounded-xl shadow-sm border border-brand-muted/20">
-                        <i data-lucide="calendar-days" class="text-brand-muted ml-3 mr-2 w-5 h-5"></i>
-                        <select onchange="setMonth(this.value)" class="bg-transparent border-none outline-none text-brand-text font-semibold py-2 pr-4 pl-1 cursor-pointer appearance-none">
-                            ${MONTHS.map(m => `<option value="${m}" class="bg-brand-panel" ${state.selectedMonth === m ? 'selected' : ''}>${m}</option>`).join('')}
-                        </select>
+                    
+                    <div class="flex items-center gap-3">
+                        ${state.activeTab === 'dashboard' ? `
+                            <button onclick="exportReport()" class="bg-[#10B981]/10 text-[#10B981] hover:bg-[#10B981]/20 border border-[#10B981]/30 transition-colors px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-sm">
+                                <i data-lucide="share-2" class="w-4 h-4"></i> Relatório do Mês
+                            </button>
+                        ` : ''}
+                        
+                        <div class="flex items-center bg-brand-dark p-1 rounded-xl shadow-sm border border-brand-muted/20">
+                            <i data-lucide="calendar-days" class="text-brand-muted ml-3 mr-2 w-5 h-5"></i>
+                            <select onchange="setMonth(this.value)" class="bg-transparent border-none outline-none text-brand-text font-semibold py-2 pr-4 pl-1 cursor-pointer appearance-none">
+                                ${MONTHS.map(m => `<option value="${m}" class="bg-brand-panel" ${state.selectedMonth === m ? 'selected' : ''}>${m}</option>`).join('')}
+                            </select>
+                        </div>
                     </div>
                 </header>
             `;
 
             if (state.activeTab === 'dashboard') {
                 content += `
-                    <!-- Nova linha de Cards para Visão Geral Expandida -->
-                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                        <div class="bg-brand-panel rounded-2xl p-4 md:p-5 border-l-4 border-blue-500 shadow-md flex flex-col justify-center">
-                            <p class="text-[10px] md:text-xs font-semibold text-brand-muted uppercase tracking-wider mb-1">Em Caixa (Total)</p>
-                            <h3 class="text-lg md:text-xl font-bold text-white">${formatCurrency(totalBalance)}</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-accent/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-brand-muted text-sm font-bold uppercase">Total em Caixa</h3>
+                                <div class="bg-brand-accent/20 p-2 rounded-lg"><i data-lucide="wallet" class="text-brand-accent w-5 h-5"></i></div>
+                            </div>
+                            <p class="text-2xl font-bold ${totalBoxBalance >= 0 ? 'text-brand-accent' : 'text-brand-danger'}">${formatCurrency(totalBoxBalance)}</p>
                         </div>
-                        <div class="bg-brand-panel rounded-2xl p-4 md:p-5 border-l-4 border-gray-400 shadow-md flex flex-col justify-center">
-                            <p class="text-[10px] md:text-xs font-semibold text-brand-muted uppercase tracking-wider mb-1">Saldo Mês Anterior</p>
-                            <h3 class="text-lg md:text-xl font-bold text-gray-300">${formatCurrency(previousBalance)}</h3>
+
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-muted/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-brand-muted text-sm font-bold uppercase">Saldo Anterior</h3>
+                                <div class="bg-brand-muted/20 p-2 rounded-lg"><i data-lucide="history" class="text-brand-muted w-5 h-5"></i></div>
+                            </div>
+                            <p class="text-2xl font-bold text-white">${formatCurrency(prevBalance)}</p>
                         </div>
-                        <div class="bg-brand-panel rounded-2xl p-4 md:p-5 border-l-4 border-brand-success shadow-md flex flex-col justify-center">
-                            <p class="text-[10px] md:text-xs font-semibold text-brand-muted uppercase tracking-wider mb-1">Receita (${state.selectedMonth})</p>
-                            <h3 class="text-lg md:text-xl font-bold text-brand-success">${formatCurrency(totalIncome)}</h3>
+
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-success/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-brand-muted text-sm font-bold uppercase">Receitas (${state.selectedMonth})</h3>
+                                <div class="bg-brand-success/20 p-2 rounded-lg"><i data-lucide="trending-up" class="text-brand-success w-5 h-5"></i></div>
+                            </div>
+                            <p class="text-2xl font-bold text-brand-success">${formatCurrency(income)}</p>
+                        </div>
+
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-danger/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-4">
+                                <h3 class="text-brand-muted text-sm font-bold uppercase">Despesas (${state.selectedMonth})</h3>
+                                <div class="bg-brand-danger/20 p-2 rounded-lg"><i data-lucide="trending-down" class="text-brand-danger w-5 h-5"></i></div>
+                            </div>
+                            <p class="text-2xl font-bold text-brand-danger">${formatCurrency(expenses)}</p>
                         </div>
                     </div>
 
-                    <!-- Linha Original (Despesas e Saldo do Mês) -->
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-                        <div class="bg-brand-panel rounded-2xl p-6 border-l-4 border-brand-danger shadow-md">
-                            <p class="text-sm font-medium text-brand-muted uppercase tracking-wider">Despesas (${state.selectedMonth})</p>
-                            <h3 class="text-2xl font-bold text-brand-danger mt-2">${formatCurrency(totalExpense)}</h3>
-                        </div>
-                        <div class="bg-brand-panel rounded-2xl p-6 border-l-4 ${balance >= 0 ? 'border-brand-accent' : 'border-brand-warning'} shadow-md">
-                            <p class="text-sm font-medium text-brand-muted uppercase tracking-wider">Saldo do Mês (${state.selectedMonth})</p>
-                            <h3 class="text-2xl font-bold mt-2 ${balance >= 0 ? 'text-brand-accent' : 'text-brand-warning'}">${formatCurrency(balance)}</h3>
-                        </div>
-                    </div>
-
-                    <div class="bg-brand-panel rounded-2xl p-6 border border-brand-muted/10 shadow-md">
-                        <h3 class="text-lg font-bold mb-4">Últimas Movimentações (${state.selectedMonth})</h3>
-                        ${monthTrans.length === 0 ? `<p class="text-brand-muted italic text-center py-4">Nenhuma movimentação.</p>` : 
-                        `<div class="space-y-3">
-                            ${monthTrans.slice(-5).reverse().map(t => `
-                                <div class="flex justify-between items-center p-4 bg-brand-dark rounded-xl border border-brand-muted/10">
-                                    <div class="flex items-center gap-4">
-                                        <div class="p-2 rounded-full ${t.type === 'income' ? 'bg-brand-success/10 text-brand-success' : 'bg-brand-danger/10 text-brand-danger'}">
-                                            <i data-lucide="${t.type === 'income' ? 'plus' : 'minus'}" class="w-4 h-4"></i>
-                                        </div>
-                                        <div>
-                                            <p class="font-semibold">${t.description}</p>
-                                            <div class="flex flex-wrap items-center gap-2 mt-1">
-                                                <p class="text-[10px] text-brand-muted flex items-center gap-1 bg-brand-panel px-2 py-0.5 rounded border border-brand-muted/20">
-                                                    <i data-lucide="calendar" class="w-3 h-3"></i> ${new Date(t.createdAt).toLocaleDateString('pt-BR')}
-                                                </p>
-                                                ${t.product ? `<p class="text-[10px] text-brand-muted flex items-center gap-1 bg-brand-panel px-2 py-0.5 rounded border border-brand-muted/20"><i data-lucide="package" class="w-3 h-3"></i> ${t.product}</p>` : ''}
+                    <div class="bg-brand-panel rounded-2xl p-6 shadow-xl border border-brand-muted/10">
+                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="activity" class="text-brand-accent"></i> Últimas Movimentações (${state.selectedMonth})</h3>
+                        ${filteredTransactions.length === 0 ? `
+                            <div class="text-center py-10 text-brand-muted bg-brand-dark/50 rounded-xl border border-dashed border-brand-muted/20">
+                                <i data-lucide="file-search" class="w-12 h-12 mx-auto mb-3 opacity-50"></i>
+                                <p>Nenhuma movimentação registrada no mês.</p>
+                            </div>
+                        ` : `
+                            <div class="space-y-3">
+                                ${filteredTransactions.slice().reverse().slice(0, 5).map(tx => `
+                                    <div class="flex justify-between items-center p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10">
+                                        <div class="flex items-center gap-4">
+                                            <div class="${tx.type === 'income' ? 'bg-brand-success/10 text-brand-success' : 'bg-brand-danger/10 text-brand-danger'} p-3 rounded-xl shadow-inner">
+                                                <i data-lucide="${tx.type === 'income' ? 'arrow-up-right' : 'arrow-down-right'}" class="w-5 h-5"></i>
+                                            </div>
+                                            <div>
+                                                <p class="font-bold text-white text-sm md:text-base">${tx.description}</p>
+                                                <p class="text-xs text-brand-muted">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
                                             </div>
                                         </div>
+                                        <p class="font-bold ${tx.type === 'income' ? 'text-brand-success' : 'text-brand-danger'}">
+                                            ${tx.type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}
+                                        </p>
                                     </div>
-                                    <span class="font-bold ${t.type === 'income' ? 'text-brand-success' : 'text-brand-danger'}">
-                                        ${t.type === 'income' ? '+' : '-'}${formatCurrency(t.amount)}
-                                    </span>
-                                </div>
-                            `).join('')}
-                        </div>`}
+                                `).join('')}
+                            </div>
+                        `}
                     </div>
                 `;
             } 
+            
             else if (state.activeTab === 'members') {
-                
-                // Aplicar filtros baseados na seleção do usuário (Visão Mensal x Apenas pagantes)
-                let displayedMembers = state.members;
-                if (state.memberViewMode === 'single' && state.filterPaidOnly) {
-                    displayedMembers = displayedMembers.filter(m => (m.payments || {})[state.selectedMonth]);
-                }
-
                 content += `
                     ${state.isAdmin ? `
-                    <div class="bg-brand-panel rounded-2xl p-6 shadow-md border border-brand-muted/10 mb-6">
-                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="user-plus" class="text-brand-accent w-5 h-5"></i> Novo Contribuinte</h3>
+                    <div class="bg-brand-panel p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6">
+                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="user-plus" class="text-brand-accent"></i> Alistar Policial</h3>
                         <form onsubmit="handleAddMember(event)" class="flex flex-col md:flex-row gap-4">
-                            <input type="text" id="newMemberName" placeholder="Nome Completo" class="flex-1 bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
-                            <input type="text" id="newMemberMatricula" placeholder="Matrícula" class="flex-1 bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
-                            <button type="submit" class="bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl transition-colors shadow-md flex items-center justify-center gap-2">
-                                <i data-lucide="plus" class="w-5 h-5"></i> Adicionar
+                            <input type="text" id="newMemberName" placeholder="Nome Completo" class="flex-1 bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                            <input type="text" id="newMemberMatricula" placeholder="Matrícula" class="flex-1 bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                            <button type="submit" class="bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2">
+                                <i data-lucide="plus-circle" class="w-5 h-5"></i> Adicionar
                             </button>
                         </form>
                     </div>` : ''}
                     
-                    <div class="bg-brand-panel rounded-2xl shadow-md border border-brand-muted/10 overflow-hidden flex flex-col">
-                        
-                        <!-- Controles de Visualização Responsiva -->
-                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 p-4 bg-brand-dark/30 border-b border-brand-muted/10">
-                            <div class="flex bg-brand-dark p-1 rounded-lg border border-brand-muted/20">
-                                <button onclick="setMemberView('all')" class="px-4 py-2 rounded-md text-sm font-medium transition-colors ${state.memberViewMode === 'all' ? 'bg-brand-panel text-brand-accent shadow' : 'text-brand-muted hover:text-white'}">Panorama Geral</button>
-                                <button onclick="setMemberView('single')" class="px-4 py-2 rounded-md text-sm font-medium transition-colors ${state.memberViewMode === 'single' ? 'bg-brand-panel text-brand-accent shadow' : 'text-brand-muted hover:text-white'}">Visão Mensal</button>
-                            </div>
-                            ${state.memberViewMode === 'single' ? `
-                            <label class="flex items-center gap-2 text-sm text-brand-muted cursor-pointer hover:text-white select-none">
-                                <input type="checkbox" ${state.filterPaidOnly ? 'checked' : ''} onchange="setFilterPaidOnly(this.checked)" class="w-4 h-4 rounded bg-brand-dark border-brand-muted/30 text-brand-accent focus:ring-brand-accent/50 focus:ring-offset-brand-panel" />
-                                Mostrar apenas pagantes de ${state.selectedMonth}
-                            </label>
-                            ` : ''}
+                    <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-muted/10 overflow-hidden">
+                        <div class="p-4 bg-brand-dark/50 border-b border-brand-muted/10 flex justify-between items-center flex-wrap gap-4">
+                            <h3 class="text-lg font-bold flex items-center"><i data-lucide="users" class="inline text-brand-accent w-5 h-5 mr-2"></i> Tropa Registrada</h3>
+                            <button onclick="toggleMembersViewMode()" class="bg-brand-panel border border-brand-muted/20 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-brand-dark transition-colors flex items-center gap-2 text-white">
+                                <i data-lucide="sliders-horizontal" class="w-4 h-4 text-brand-accent"></i> 
+                                ${state.membersViewMode === 'panorama' ? 'Exibir Apenas o Mês Selecionado' : 'Exibir Panorama (Todos os Meses)'}
+                            </button>
                         </div>
-
                         <div class="overflow-x-auto">
                             <table class="w-full text-left border-collapse">
                                 <thead>
-                                    <tr class="bg-brand-dark border-b border-brand-muted/10">
-                                        <th class="p-4 font-semibold text-brand-muted">Nome / Matrícula</th>
-                                        
-                                        <!-- Renderiza 1 ou 12 meses baseado no modo -->
-                                        ${state.memberViewMode === 'all' 
-                                            ? MONTHS.map(m => `<th class="p-4 font-semibold text-center ${m === state.selectedMonth ? 'text-brand-text bg-brand-muted/10' : 'text-brand-muted'}">${m}</th>`).join('')
-                                            : `<th class="p-4 font-semibold text-center text-brand-text bg-brand-muted/10">${state.selectedMonth}</th>`
-                                        }
-
-                                        ${state.isAdmin ? `<th class="p-4 font-semibold text-center text-brand-muted">Ação</th>` : ''}
+                                    <tr class="bg-brand-dark border-b border-brand-muted/10 text-sm">
+                                        <th class="p-4 font-semibold text-brand-muted sticky left-0 bg-brand-dark z-20 border-r border-brand-muted/5 min-w-[200px] shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)]">Nome / Matrícula</th>
+                                        ${MONTHS.map(m => {
+                                            const isSelected = m === state.selectedMonth;
+                                            const isVisible = state.membersViewMode === 'panorama' || isSelected;
+                                            return `
+                                            <th class="p-4 font-semibold text-center ${isSelected ? 'text-brand-text bg-brand-muted/10' : 'text-brand-muted'} ${isVisible ? '' : 'hidden'}">${m}</th>
+                                        `}).join('')}
+                                        ${state.isAdmin ? `<th class="p-4 font-semibold text-center text-brand-muted">Ações</th>` : ''}
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-brand-muted/10">
-                                    ${displayedMembers.length === 0 ? `<tr><td colspan="14" class="p-8 text-center text-brand-muted italic">Nenhum contribuinte encontrado para este filtro.</td></tr>` : 
-                                    displayedMembers.map(member => `
+                                    ${state.members.length === 0 ? `<tr><td colspan="14" class="p-8 text-center text-brand-muted">Nenhum contribuinte registrado no banco de dados.</td></tr>` : 
+                                    state.members.map(member => `
                                         <tr class="hover:bg-brand-dark/50 transition-colors">
-                                            <td class="p-4">
-                                                <p class="font-medium whitespace-nowrap">${member.name}</p>
+                                            <td class="p-4 sticky left-0 bg-brand-panel z-10 border-r border-brand-muted/5 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)]">
+                                                <p class="font-bold text-white whitespace-nowrap">${member.name}</p>
                                                 <p class="text-xs text-brand-muted font-mono mt-1">${member.matricula}</p>
                                             </td>
-                                            
-                                            <!-- Meses individuais -->
-                                            ${(state.memberViewMode === 'all' ? MONTHS : [state.selectedMonth]).map(m => {
+                                            ${MONTHS.map(m => {
                                                 const isPaid = (member.payments || {})[m];
+                                                const isSelected = m === state.selectedMonth;
+                                                const isVisible = state.membersViewMode === 'panorama' || isSelected;
                                                 return `
-                                                <td class="p-4 text-center ${m === state.selectedMonth ? 'bg-brand-dark/30' : ''}">
+                                                <td class="p-4 text-center ${isSelected ? 'bg-brand-dark/30' : ''} ${isVisible ? '' : 'hidden'}">
                                                     <button 
                                                         onclick="togglePayment('${member.id}', '${m}')"
                                                         ${!state.isAdmin ? 'disabled' : ''}
-                                                        class="w-8 h-8 rounded-full flex items-center justify-center mx-auto transition-all ${isPaid ? 'bg-brand-success/20 text-brand-success border border-brand-success/30' : 'bg-brand-dark text-brand-muted border border-brand-muted/20'} ${state.isAdmin ? 'hover:scale-110 cursor-pointer' : 'opacity-80 cursor-default'}"
-                                                        title="${state.isAdmin ? 'Marcar/Desmarcar (Adiciona receita auto.)' : ''}"
+                                                        class="w-8 h-8 rounded-full flex items-center justify-center mx-auto transition-all ${isPaid ? 'bg-brand-success/20 text-brand-success border border-brand-success/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]' : 'bg-brand-dark text-brand-muted border border-brand-muted/20'} ${state.isAdmin ? 'hover:scale-110 cursor-pointer' : 'opacity-80 cursor-default'}"
                                                     >
                                                         <i data-lucide="${isPaid ? 'check' : 'x'}" class="w-4 h-4"></i>
                                                     </button>
                                                 </td>`
                                             }).join('')}
-
                                             ${state.isAdmin ? `
                                             <td class="p-4 text-center">
                                                 <button onclick="handleDeleteMember('${member.id}')" class="text-brand-danger hover:text-red-400 p-2 rounded-lg hover:bg-brand-danger/10 transition-colors">
@@ -554,80 +785,122 @@
                     </div>
                 `;
             } 
+            
             else if (state.activeTab === 'transactions') {
                 content += `
                     ${state.isAdmin ? `
-                    <div class="bg-brand-panel rounded-2xl p-6 shadow-md border border-brand-muted/10 mb-6">
-                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="wallet" class="text-brand-accent w-5 h-5"></i> Novo Lançamento (${state.selectedMonth})</h3>
+                    <div class="bg-brand-panel p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6">
+                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="plus-square" class="text-brand-accent"></i> Registrar Fluxo (${state.selectedMonth})</h3>
                         <form onsubmit="handleAddTransaction(event)" class="space-y-4">
                             <div class="flex gap-4">
                                 <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-success has-[:checked]:bg-brand-success/10 has-[:checked]:text-brand-success border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
-                                    <input type="radio" name="transType" value="income" checked class="hidden" onchange="render()"/>
+                                    <input type="radio" name="transType" value="income" checked class="hidden"/>
                                     <i data-lucide="plus" class="w-5 h-5"></i> Receita
                                 </label>
                                 <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-danger has-[:checked]:bg-brand-danger/10 has-[:checked]:text-brand-danger border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
-                                    <input type="radio" name="transType" value="expense" class="hidden" onchange="render()"/>
+                                    <input type="radio" name="transType" value="expense" class="hidden"/>
                                     <i data-lucide="minus" class="w-5 h-5"></i> Despesa
                                 </label>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <input type="text" id="newTransDesc" placeholder="Descrição" class="bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
-                                <input type="number" id="newTransAmount" step="0.01" placeholder="Valor (R$)" class="bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
-                                <input type="date" id="newTransDate" class="bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" title="Data do Lançamento (Deixe vazio para usar a data de hoje)"/>
+                                <input type="text" id="newTransDesc" placeholder="Descrição" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                                <input type="number" id="newTransAmount" step="0.01" placeholder="Valor (R$)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                                <input type="date" id="newTransDate" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-brand-muted" title="Retroativo (opcional)"/>
                             </div>
-                            
-                            ${document.querySelector('input[name="transType"]:checked')?.value === 'expense' || !document.querySelector('input[name="transType"]:checked') ? 
-                            `<input type="text" id="newTransProduct" placeholder="Produtos Adquiridos (opcional)" class="w-full bg-brand-dark border-none outline-none focus:ring-2 focus:ring-brand-danger rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>` 
-                            : ''}
-
-                            <div class="flex justify-end">
-                                <button type="submit" class="bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-xl transition-colors shadow-md flex items-center gap-2">
-                                    Registrar
-                                </button>
-                            </div>
+                            <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-2">
+                                <i data-lucide="save" class="w-5 h-5"></i> Gravar Registro
+                            </button>
                         </form>
                     </div>` : ''}
 
-                    <div class="bg-brand-panel rounded-2xl shadow-md border border-brand-muted/10 overflow-hidden">
-                        <div class="bg-brand-dark p-4 border-b border-brand-muted/10"><h4 class="font-semibold text-brand-muted">Registros do Mês</h4></div>
-                        <div class="divide-y divide-brand-muted/10">
-                            ${monthTrans.length === 0 ? `<div class="p-8 text-center text-brand-muted italic">Nenhuma movimentação neste mês.</div>` : 
-                            monthTrans.map(t => `
-                                <div class="p-4 flex flex-col md:flex-row justify-between md:items-center hover:bg-brand-dark/50 transition-colors gap-4">
-                                    <div class="flex items-start gap-4">
-                                        <div class="p-2 rounded-full flex-shrink-0 ${t.type === 'income' ? 'bg-brand-success/10 text-brand-success' : 'bg-brand-danger/10 text-brand-danger'}">
-                                            <i data-lucide="${t.type === 'income' ? 'plus' : 'minus'}" class="w-5 h-5"></i>
-                                        </div>
-                                        <div>
-                                            <h5 class="font-bold flex items-center gap-2">
-                                                ${t.description}
-                                            </h5>
-                                            <div class="flex flex-wrap items-center gap-2 mt-1">
-                                                <p class="text-[11px] text-brand-muted flex items-center gap-1 bg-brand-dark px-2 py-1 rounded-md border border-brand-muted/20">
-                                                    <i data-lucide="calendar" class="w-3 h-3"></i> ${new Date(t.createdAt).toLocaleDateString('pt-BR')}
-                                                </p>
-                                                ${t.product ? `<p class="text-[11px] text-brand-muted flex items-center gap-1 bg-brand-dark px-2 py-1 rounded-md border border-brand-muted/20"><i data-lucide="package" class="w-3 h-3"></i> ${t.product}</p>` : ''}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="flex items-center justify-between md:justify-end gap-6 w-full md:w-auto pl-14 md:pl-0">
-                                        <span class="font-bold text-lg ${t.type === 'income' ? 'text-brand-success' : 'text-brand-danger'}">
-                                            ${t.type === 'income' ? '+' : '-'}${formatCurrency(t.amount)}
-                                        </span>
-                                        ${state.isAdmin ? `
-                                        <button onclick="handleDeleteTransaction('${t.id}')" class="text-brand-danger hover:text-red-400 p-2 rounded-lg hover:bg-brand-danger/10 transition-colors">
-                                            <i data-lucide="trash-2" class="w-5 h-5"></i>
-                                        </button>` : ''}
-                                    </div>
-                                </div>
-                            `).join('')}
+                    <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-muted/10 overflow-hidden">
+                        <div class="p-6">
+                            <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="list" class="text-brand-accent"></i> Movimentações de ${state.selectedMonth}</h3>
+                            <div class="overflow-x-auto">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm">
+                                            <th class="py-3 px-4 font-medium">Data</th>
+                                            <th class="py-3 px-4 font-medium">Descrição</th>
+                                            <th class="py-3 px-4 font-medium text-right">Valor</th>
+                                            ${state.isAdmin ? `<th class="py-3 px-4 font-medium text-center">Ações</th>` : ''}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${filteredTransactions.length === 0 ? `
+                                            <tr>
+                                                <td colspan="4" class="py-10 text-center text-brand-muted">
+                                                    Nenhum registro encontrado neste mês.
+                                                </td>
+                                            </tr>
+                                        ` : filteredTransactions.slice().reverse().map(tx => `
+                                            <tr class="border-b border-brand-muted/5 hover:bg-brand-dark/30 transition-colors group">
+                                                <td class="py-4 px-4 text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                                                <td class="py-4 px-4">
+                                                    <p class="font-bold text-white">${tx.description}</p>
+                                                </td>
+                                                <td class="py-4 px-4 text-right font-bold ${tx.type === 'income' ? 'text-brand-success' : 'text-brand-danger'} whitespace-nowrap">
+                                                    ${tx.type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}
+                                                </td>
+                                                ${state.isAdmin ? `
+                                                <td class="py-4 px-4">
+                                                    <div class="flex items-center justify-center gap-2">
+                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
+                                                            <i data-lucide="receipt" class="w-5 h-5"></i>
+                                                        </button>
+                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-2 rounded-lg transition-colors border border-transparent hover:border-brand-danger/30">
+                                                            <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>` : ''}
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
+                    </div>
+                `;
+            }
+
+            else if (state.activeTab === 'audit') {
+                content += `
+                    <div class="bg-brand-panel rounded-2xl p-6 shadow-xl border border-brand-muted/10 h-full">
+                        <div class="flex items-center justify-between mb-6">
+                            <h3 class="text-lg font-bold flex items-center gap-2 text-white"><i data-lucide="history" class="text-brand-accent"></i> Registro de Atividades</h3>
+                            <span class="text-xs bg-brand-dark text-brand-muted px-3 py-1 rounded-full border border-brand-muted/20">Auditoria em Tempo Real</span>
+                        </div>
+                        
+                        ${state.logs.length === 0 ? `
+                            <div class="text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
+                                <i data-lucide="shield-check" class="w-12 h-12 mx-auto mb-3 opacity-50 text-[#EAB308]"></i>
+                                <p>Nenhuma atividade registrada no sistema recentemente.</p>
+                            </div>
+                        ` : `
+                            <div class="space-y-4">
+                                ${state.logs.slice(0, 50).map(log => `
+                                    <div class="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10 hover:border-brand-muted/30 transition-all">
+                                        <div class="flex items-center gap-4 mb-2 sm:mb-0">
+                                            <div class="bg-brand-panel p-2 rounded-lg border border-brand-muted/20">
+                                                <i data-lucide="terminal" class="text-[#EAB308] w-5 h-5"></i>
+                                            </div>
+                                            <p class="text-white text-sm md:text-base">${log.action}</p>
+                                        </div>
+                                        <div class="flex items-center gap-2 text-brand-muted text-xs bg-brand-panel px-3 py-1.5 rounded-lg border border-brand-muted/10 shrink-0">
+                                            <i data-lucide="clock" class="w-3.5 h-3.5"></i>
+                                            ${log.date}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `}
                     </div>
                 `;
             }
 
             content += `</main>`;
 
+            // Modal de Login
             if (state.showLoginModal) {
                 content += `
                 <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -659,7 +932,7 @@
 
                             <div class="text-center mt-4">
                                 <button type="button" onclick="toggleReset(${!state.isResetting})" class="text-sm text-brand-accent hover:text-blue-400 underline transition-colors">
-                                    ${state.isResetting ? 'Voltar para o Login' : 'Esqueceu a senha?'}
+                                    ${state.isResetting ? 'Voltar para Login' : 'Esqueceu a senha?'}
                                 </button>
                             </div>
                         </form>
@@ -667,11 +940,122 @@
                 </div>`;
             }
 
-            appDiv.innerHTML = content;
-            lucide.createIcons(); // Initialize icons
+            if (state.showReceiptModal && state.receiptTx) {
+                const tx = state.receiptTx;
+                
+                // Buscar Matrícula caso seja um contribuinte registrado
+                let matInfo = "N/A";
+                if (tx.memberId) {
+                    const found = state.members.find(m => m.id === tx.memberId);
+                    if (found) matInfo = found.matricula;
+                }
+
+                // Definir Hora Exata que a transação foi lançada
+                let txTime = "00:00";
+                if (tx.createdAt) {
+                    txTime = new Date(tx.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                }
+
+                content += `
+                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+                    <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
+                        <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
+                            <h3 class="font-bold text-lg flex items-center gap-2"><i data-lucide="receipt" class="text-brand-accent"></i> Gerar Recibo</h3>
+                            <button onclick="closeReceiptModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        
+                        <div class="p-6 overflow-y-auto flex-grow flex flex-col gap-6">
+                            
+                            ${state.isEditingReceiptSettings ? `
+                                <!-- Tela de Edição de Dados do Administrador -->
+                                <div class="bg-brand-dark p-5 rounded-xl border border-brand-muted/20">
+                                    <h4 class="font-bold mb-4 text-brand-accent flex items-center gap-2"><i data-lucide="pen-tool"></i> Dados do Emissor (Ficará Salvo)</h4>
+                                    <div class="space-y-4">
+                                        <input type="text" id="admin-name-input" value="${state.adminReceiptInfo.name}" placeholder="Nome do Administrador (Ex: SGT Silva)" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white"/>
+                                        <input type="text" id="admin-mat-input" value="${state.adminReceiptInfo.matricula}" placeholder="Matrícula" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white"/>
+                                        
+                                        <div>
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-sm text-brand-muted">Assinatura Digital (Use o dedo na tela)</label>
+                                                <button onclick="clearSignature()" class="text-xs text-brand-danger hover:underline">Limpar</button>
+                                            </div>
+                                            <canvas id="signaturePad" width="600" height="300" class="w-full bg-white rounded-xl border-2 border-brand-muted/30 cursor-crosshair touch-none shadow-inner"></canvas>
+                                        </div>
+                                        
+                                        <button onclick="saveReceiptSettings()" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 rounded-xl transition-colors">
+                                            Salvar Configurações
+                                        </button>
+                                    </div>
+                                </div>
+                            ` : `
+                                <!-- Visualização do Recibo para Captura -->
+                                <div class="flex justify-end">
+                                    <button onclick="toggleEditReceiptSettings()" class="text-xs text-brand-accent hover:underline flex items-center gap-1"><i data-lucide="edit-3" class="w-3 h-3"></i> Editar Assinatura / Nome</button>
+                                </div>
+
+                                <div id="receipt-capture-area" class="bg-white text-black p-8 rounded-sm shadow-sm relative overflow-hidden" style="font-family: Arial, sans-serif;">
+                                    <!-- Marca d'água -->
+                                    <div class="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"></path></svg>
+                                    </div>
+
+                                    <div class="text-center border-b-2 border-gray-300 pb-4 mb-6">
+                                        <h2 class="text-xl font-black uppercase tracking-wider text-gray-800">Grêmio PIT</h2>
+                                        <p class="text-sm font-bold text-gray-500 tracking-widest mt-1">RECIBO DE ${tx.type === 'income' ? 'ARRECADAÇÃO' : 'DESPESA'}</p>
+                                    </div>
+
+                                    <div class="space-y-4 text-sm font-medium">
+                                        <div class="flex justify-between border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500">Valor:</span>
+                                            <span class="font-black text-lg ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}">${formatCurrency(tx.amount)}</span>
+                                        </div>
+                                        <div class="flex justify-between border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500">Contribuinte:</span>
+                                            <span class="font-bold text-gray-800 text-right uppercase">${tx.description}</span>
+                                        </div>
+                                        <div class="flex justify-between border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500">Matrícula:</span>
+                                            <span class="font-bold text-gray-800">${matInfo}</span>
+                                        </div>
+                                        <div class="flex justify-between border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500">Data / Hora do Registro:</span>
+                                            <span class="font-bold text-gray-800">${tx.date || (tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('pt-BR') : 'Sem Data')} às ${txTime}</span>
+                                        </div>
+                                        <div class="flex justify-between pb-2">
+                                            <span class="text-gray-500">Mês de Competência:</span>
+                                            <span class="font-bold text-gray-800 uppercase">${
+                                                { 'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril', 'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto', 'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro' }[tx.month] || tx.month
+                                            }</span>
+                                        </div>
+                                    </div>
+
+                                    <div class="mt-10 pt-6 border-t-2 border-gray-300 text-center flex flex-col items-center">
+                                        ${state.adminReceiptInfo.signatureDataUrl ? `<img src="${state.adminReceiptInfo.signatureDataUrl}" class="h-16 object-contain mb-1" />` : '<div class="h-16 mb-1"></div>'}
+                                        <div class="w-48 border-t border-gray-800 mb-2"></div>
+                                        <p class="font-bold text-gray-900 uppercase text-xs">${state.adminReceiptInfo.name || 'Nome do Responsável'}</p>
+                                        <p class="text-xs text-gray-500 font-bold">Mat: ${state.adminReceiptInfo.matricula || '000000'}</p>
+                                        <p class="text-[10px] text-gray-400 mt-4 italic">Documento emitido eletronicamente via Sistema PIT.</p>
+                                    </div>
+                                </div>
+
+                                <button id="btn-share-receipt" onclick="shareReceiptImage()" class="w-full bg-[#10B981] hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 mt-2">
+                                    <i data-lucide="share-2" class="w-5 h-5"></i> Enviar Imagem no WhatsApp
+                                </button>
+                            `}
+                        </div>
+                    </div>
+                </div>`;
+            }
+
+            app.innerHTML = content;
+            lucide.createIcons();
+
+            // Ativa o canvas se estiver no modo de edição do modal de recibos
+            if (state.showReceiptModal && state.isEditingReceiptSettings) {
+                initSignatureCanvas();
+            }
         }
         
-        // Initial render
         render();
     </script>
 </body>
