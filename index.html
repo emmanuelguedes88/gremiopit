@@ -328,10 +328,15 @@
                     amount: parseFloat(amount),
                     month: state.selectedMonth,
                     date: formattedDate,
-                    createdAt: DateInput ? new Date(dateInput).getTime() : Date.now() // Preserva tempo correto se editado
+                    createdAt: dateInput ? new Date(dateInput).getTime() : Date.now() // Correção: 'dateInput' com 'd' minúsculo
                 });
                 logAction(`Registro (${type === 'income' ? 'Receita' : 'Despesa'}): ${desc} - R$ ${amount}`);
-            } catch(e) {}
+                
+                // Limpa os campos do formulário após gravar
+                document.getElementById('newTransDesc').value = '';
+                document.getElementById('newTransAmount').value = '';
+                document.getElementById('newTransDate').value = '';
+            } catch(e) { console.error(e); }
         };
 
         window.handleDeleteTransaction = async (id) => {
@@ -501,27 +506,77 @@
             
             const element = document.getElementById('receipt-capture-area');
             
-            // Remove limites de rolagem temporariamente para evitar corte na imagem gerada (Bug de altura)
-            const modalContainer = element.closest('.max-h-\\[90vh\\]');
-            const scrollContainer = element.closest('.overflow-y-auto');
-            if(modalContainer) modalContainer.style.maxHeight = 'none';
-            if(scrollContainer) scrollContainer.style.overflow = 'visible';
+            // Remove limites de rolagem temporariamente para evitar corte na imagem gerada (Bug de altura em celulares)
+            const modalBox = document.getElementById('receipt-modal-box');
+            const scrollBox = document.getElementById('receipt-scroll-box');
+            const overlay = modalBox ? modalBox.parentElement : null;
+            
+            // 1. Tira as amarras da tela (fixed/max-height) para deixar o recibo renderizar 100% solto até o final
+            if (overlay) {
+                overlay.style.position = 'absolute';
+                overlay.style.alignItems = 'flex-start';
+                overlay.style.height = 'auto';
+            }
+            if(modalBox) modalBox.style.maxHeight = 'none';
+            if(scrollBox) {
+                scrollBox.style.overflow = 'visible';
+                scrollBox.scrollTop = 0; 
+            }
+            
+            // Aguarda o navegador aplicar as mudanças de CSS e expandir o div virtualmente
+            await new Promise(r => setTimeout(r, 200));
             
             try {
                 // Gera a imagem capturando o design HTML do recibo em alta definição
-                const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
+                const canvas = await html2canvas(element, { 
+                    scale: 2, 
+                    backgroundColor: '#ffffff', 
+                    useCORS: true,
+                    scrollY: -window.scrollY // Garante que a foto pega do topo caso a pessoa tenha rolado pra baixo
+                });
                 
-                // Restaura os limites de rolagem da tela
-                if(modalContainer) modalContainer.style.maxHeight = '';
-                if(scrollContainer) scrollContainer.style.overflow = '';
+                // Restaura os limites de rolagem da tela IMEDIATAMENTE após bater a foto
+                if (overlay) {
+                    overlay.style.position = '';
+                    overlay.style.alignItems = '';
+                    overlay.style.height = '';
+                }
+                if(modalBox) modalBox.style.maxHeight = '';
+                if(scrollBox) scrollBox.style.overflow = '';
 
                 canvas.toBlob(async (blob) => {
                     const file = new File([blob], 'recibo-pit.png', { type: 'image/png' });
                     state.generatedReceiptFile = file; // Salva para o próximo clique
                     
+                    // --- EXIBE A IMAGEM GERADA NA TELA PARA CONFERÊNCIA ANTES DE ENVIAR ---
+                    const captureArea = document.getElementById('receipt-capture-area');
+                    if (captureArea) captureArea.style.display = 'none';
+                    
+                    const editBtn = document.getElementById('edit-receipt-btn-container');
+                    if (editBtn) editBtn.style.display = 'none';
+
+                    let previewContainer = document.getElementById('receipt-preview-container');
+                    if (!previewContainer) {
+                        previewContainer = document.createElement('div');
+                        previewContainer.id = 'receipt-preview-container';
+                        previewContainer.className = 'w-full flex justify-center my-2';
+                        
+                        const previewImg = document.createElement('img');
+                        previewImg.id = 'receipt-preview-img';
+                        previewImg.className = 'w-full max-w-sm rounded-lg shadow-[0_0_15px_rgba(0,0,0,0.5)] border border-brand-muted/20';
+                        
+                        previewContainer.appendChild(previewImg);
+                        btn.parentNode.insertBefore(previewContainer, btn);
+                    }
+                    document.getElementById('receipt-preview-img').src = URL.createObjectURL(blob);
+                    
+                    const modalTitle = document.getElementById('receipt-modal-title');
+                    if (modalTitle) modalTitle.innerHTML = '<i data-lucide="check-circle" class="text-brand-success w-5 h-5"></i> Imagem Pronta';
+                    // ------------------------------------------------------------------------
+                    
                     // Transforma o botão para a liberação do Share nativo
                     btn.disabled = false;
-                    btn.innerHTML = '<i data-lucide="send" class="w-5 h-5"></i> Recibo Pronto! Clique para Enviar';
+                    btn.innerHTML = '<i data-lucide="send" class="w-5 h-5"></i> Confirmar e Enviar para o WhatsApp';
                     btn.classList.remove('bg-[#10B981]', 'hover:bg-green-600');
                     btn.classList.add('bg-brand-accent', 'hover:bg-blue-600');
                     lucide.createIcons();
@@ -530,6 +585,16 @@
                 console.error(err);
                 btn.disabled = false;
                 btn.innerHTML = origHTML;
+                
+                // Restaura os limites caso dê algum erro também
+                if (overlay) {
+                    overlay.style.position = '';
+                    overlay.style.alignItems = '';
+                    overlay.style.height = '';
+                }
+                if(modalBox) modalBox.style.maxHeight = '';
+                if(scrollBox) scrollBox.style.overflow = '';
+                
                 lucide.createIcons();
             }
         };
@@ -950,21 +1015,29 @@
                     if (found) matInfo = found.matricula;
                 }
 
-                // Definir Hora Exata que a transação foi lançada
+                // Definir Hora e Data Exata
                 let txTime = "00:00";
+                let formattedDate = tx.date || "Sem Data";
                 if (tx.createdAt) {
-                    txTime = new Date(tx.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                    const dateObj = new Date(tx.createdAt);
+                    if(!isNaN(dateObj)) {
+                        txTime = dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                        if(!tx.date) formattedDate = dateObj.toLocaleDateString('pt-BR');
+                    }
                 }
+                
+                // Mês por extenso
+                const monthName = { 'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril', 'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto', 'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro' }[tx.month] || tx.month;
 
                 content += `
                 <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
-                    <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
+                    <div id="receipt-modal-box" class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
                         <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
-                            <h3 class="font-bold text-lg flex items-center gap-2"><i data-lucide="receipt" class="text-brand-accent"></i> Gerar Recibo</h3>
+                            <h3 id="receipt-modal-title" class="font-bold text-lg flex items-center gap-2"><i data-lucide="receipt" class="text-brand-accent"></i> Gerar Recibo</h3>
                             <button onclick="closeReceiptModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
                         
-                        <div class="p-6 overflow-y-auto flex-grow flex flex-col gap-6">
+                        <div id="receipt-scroll-box" class="p-6 overflow-y-auto flex-grow flex flex-col gap-6">
                             
                             ${state.isEditingReceiptSettings ? `
                                 <!-- Tela de Edição de Dados do Administrador -->
@@ -989,11 +1062,11 @@
                                 </div>
                             ` : `
                                 <!-- Visualização do Recibo para Captura -->
-                                <div class="flex justify-end">
+                                <div id="edit-receipt-btn-container" class="flex justify-end">
                                     <button onclick="toggleEditReceiptSettings()" class="text-xs text-brand-accent hover:underline flex items-center gap-1"><i data-lucide="edit-3" class="w-3 h-3"></i> Editar Assinatura / Nome</button>
                                 </div>
 
-                                <div id="receipt-capture-area" class="bg-white text-black p-8 rounded-sm shadow-sm relative overflow-hidden" style="font-family: Arial, sans-serif;">
+                                <div id="receipt-capture-area" class="bg-white text-black p-8 rounded-sm shadow-sm relative overflow-hidden shrink-0" style="font-family: Arial, sans-serif;">
                                     <!-- Marca d'água -->
                                     <div class="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"></path></svg>
@@ -1005,27 +1078,25 @@
                                     </div>
 
                                     <div class="space-y-4 text-sm font-medium">
-                                        <div class="flex justify-between border-b border-gray-100 pb-2">
-                                            <span class="text-gray-500">Valor:</span>
-                                            <span class="font-black text-lg ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}">${formatCurrency(tx.amount)}</span>
+                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500 shrink-0">Valor:</span>
+                                            <span class="font-black text-lg text-right ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}">${formatCurrency(tx.amount)}</span>
                                         </div>
-                                        <div class="flex justify-between border-b border-gray-100 pb-2">
-                                            <span class="text-gray-500">Contribuinte:</span>
+                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500 shrink-0">Contribuinte:</span>
                                             <span class="font-bold text-gray-800 text-right uppercase">${tx.description}</span>
                                         </div>
-                                        <div class="flex justify-between border-b border-gray-100 pb-2">
-                                            <span class="text-gray-500">Matrícula:</span>
-                                            <span class="font-bold text-gray-800">${matInfo}</span>
+                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500 shrink-0">Matrícula:</span>
+                                            <span class="font-bold text-gray-800 text-right">${matInfo}</span>
                                         </div>
-                                        <div class="flex justify-between border-b border-gray-100 pb-2">
-                                            <span class="text-gray-500">Data / Hora do Registro:</span>
-                                            <span class="font-bold text-gray-800">${tx.date || (tx.createdAt ? new Date(tx.createdAt).toLocaleDateString('pt-BR') : 'Sem Data')} às ${txTime}</span>
+                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                            <span class="text-gray-500 shrink-0">Data / Hora:</span>
+                                            <span class="font-bold text-gray-800 text-right">${formattedDate} às ${txTime}</span>
                                         </div>
-                                        <div class="flex justify-between pb-2">
-                                            <span class="text-gray-500">Mês de Competência:</span>
-                                            <span class="font-bold text-gray-800 uppercase">${
-                                                { 'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril', 'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto', 'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro' }[tx.month] || tx.month
-                                            }</span>
+                                        <div class="flex justify-between items-end gap-4 pb-2">
+                                            <span class="text-gray-500 shrink-0">Mês de Competência:</span>
+                                            <span class="font-bold text-gray-800 text-right uppercase">${monthName}</span>
                                         </div>
                                     </div>
 
