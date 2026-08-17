@@ -54,6 +54,15 @@
             animation: fall linear infinite;
             filter: drop-shadow(0 0 5px rgba(255,255,255,0.1));
         }
+
+        /* Animação para o alerta customizado */
+        @keyframes fadeInAlert {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fadeInAlert 0.3s ease-out forwards;
+        }
     </style>
 </head>
 <body class="bg-brand-dark min-h-screen text-brand-text flex flex-col md:flex-row md:h-screen md:overflow-hidden relative">
@@ -110,7 +119,7 @@
             isAdmin: false,
             members: [],
             transactions: [],
-            logs: [], // Auditoria restaurada
+            logs: [], 
             showLoginModal: false,
             loginEmail: '',
             loginPassword: '',
@@ -118,16 +127,32 @@
             isResetting: false,
             dbError: null,
             
-            // Novas configurações
+            membersViewMode: window.innerWidth < 768 ? 'monthly' : 'panorama', 
+            showReceiptModal: false,
             membersViewMode: window.innerWidth < 768 ? 'monthly' : 'panorama', // Panorama vs Mensal
             showReceiptModal: false,
             receiptTx: null,
             isEditingReceiptSettings: false,
             adminReceiptInfo: JSON.parse(localStorage.getItem('gremio_admin_receipt_info') || '{"name":"","matricula":"","signatureDataUrl":""}'),
-            generatedReceiptFile: null
+            generatedReceiptFile: null,
+
+            expenseImageBase64: null,
+            showDetailsModal: false,
+            detailsTx: null,
+            showPassword: false
         };
 
         window.state = state;
+
+        /* Override nativo para alert() visando respeitar regra de UI sem alterar a lógica preexistente */
+        window.alert = (message) => {
+            const modal = document.createElement('div');
+            modal.className = 'fixed top-4 right-4 bg-brand-panel border-l-4 border-brand-accent text-white p-4 rounded shadow-2xl z-[9999] flex items-center gap-3 animate-fade-in';
+            modal.innerHTML = `<i data-lucide="info" class="text-brand-accent"></i> <div>${message}</div>`;
+            document.body.appendChild(modal);
+            if(window.lucide) lucide.createIcons({root: modal});
+            setTimeout(() => modal.remove(), 4000);
+        };
 
         let unsubMembers = null;
         let unsubTrans = null;
@@ -149,7 +174,7 @@
         function setupListeners() {
             if (unsubMembers) unsubMembers();
             if (unsubTrans) unsubTrans();
-            if (unsubLogs) unsubLogs(); // Restaurado
+            if (unsubLogs) unsubLogs(); 
 
             const membersRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'members');
             const transRef = collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions');
@@ -177,7 +202,6 @@
                 render();
             });
 
-            // Reativando a escuta da auditoria
             unsubLogs = onSnapshot(logsRef, (snapshot) => {
                 if(isTransitioningAuth) return;
                 state.logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); 
@@ -305,6 +329,61 @@
             } catch(e) {}
         };
 
+        window.toggleExpenseFields = () => {
+            const type = document.querySelector('input[name="transType"]:checked').value;
+            const extraFields = document.getElementById('expenseExtraFields');
+            if (extraFields) {
+                if (type === 'expense') extraFields.classList.remove('hidden');
+                else extraFields.classList.add('hidden');
+            }
+        };
+
+        window.handleExpenseImage = (e) => {
+            const file = e.target.files[0];
+            if (!file) { state.expenseImageBase64 = null; return; }
+            
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+                    const MAX_WIDTH = 800; 
+                    if (width > MAX_WIDTH) {
+                        height *= MAX_WIDTH / width;
+                        width = MAX_WIDTH;
+                    }
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    state.expenseImageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        };
+
+        window.openDetailsModal = (id) => {
+            const tx = state.transactions.find(t => t.id === id);
+            if(!tx) return;
+            state.detailsTx = tx;
+            state.showDetailsModal = true;
+            render();
+        };
+
+        window.closeDetailsModal = () => {
+            state.showDetailsModal = false;
+            state.detailsTx = null;
+            render();
+        };
+
+        window.togglePassword = () => {
+            state.showPassword = !state.showPassword;
+            render();
+        };
+
         window.handleAddTransaction = async (e) => {
             e.preventDefault();
             const type = document.querySelector('input[name="transType"]:checked').value;
@@ -315,10 +394,23 @@
             if (!desc || !amount || !state.user) return;
             
             let formattedDate = new Date().toLocaleDateString('pt-BR');
-            // Se o usuário selecionou uma data retroativa, usamos ela
+            let timestamp = Date.now();
+            // Se o usuário selecionou uma data e hora retroativa, usamos ela
             if (dateInput) {
                 const d = new Date(dateInput);
-                formattedDate = new Date(d.getTime() + d.getTimezoneOffset() * 60000).toLocaleDateString('pt-BR');
+                formattedDate = d.toLocaleDateString('pt-BR');
+                timestamp = d.getTime();
+            }
+
+            let extraData = {};
+            if (type === 'expense') {
+                extraData = {
+                    purchaseLocation: document.getElementById('newTransLocation')?.value || '',
+                    purchaseLink: document.getElementById('newTransLink')?.value || '',
+                    buyerName: document.getElementById('newTransBuyerName')?.value || '',
+                    buyerMatricula: document.getElementById('newTransBuyerMat')?.value || '',
+                    receiptImage: state.expenseImageBase64 || null
+                };
             }
 
             try {
@@ -328,7 +420,8 @@
                     amount: parseFloat(amount),
                     month: state.selectedMonth,
                     date: formattedDate,
-                    createdAt: dateInput ? new Date(dateInput).getTime() : Date.now() // Correção: 'dateInput' com 'd' minúsculo
+                    createdAt: timestamp,
+                    ...extraData
                 });
                 logAction(`Registro (${type === 'income' ? 'Receita' : 'Despesa'}): ${desc} - R$ ${amount}`);
                 
@@ -336,6 +429,15 @@
                 document.getElementById('newTransDesc').value = '';
                 document.getElementById('newTransAmount').value = '';
                 document.getElementById('newTransDate').value = '';
+
+                if (type === 'expense') {
+                    if(document.getElementById('newTransLocation')) document.getElementById('newTransLocation').value = '';
+                    if(document.getElementById('newTransLink')) document.getElementById('newTransLink').value = '';
+                    if(document.getElementById('newTransBuyerName')) document.getElementById('newTransBuyerName').value = '';
+                    if(document.getElementById('newTransBuyerMat')) document.getElementById('newTransBuyerMat').value = '';
+                    if(document.getElementById('newTransPhoto')) document.getElementById('newTransPhoto').value = '';
+                    state.expenseImageBase64 = null;
+                }
             } catch(e) { console.error(e); }
         };
 
@@ -375,7 +477,6 @@
             state.receiptTx = tx;
             state.generatedReceiptFile = null;
             
-            // Se nunca preencheu dados, abre modo de edição automaticamente
             if (!state.adminReceiptInfo.name || !state.adminReceiptInfo.signatureDataUrl) {
                 state.isEditingReceiptSettings = true;
             } else {
@@ -436,11 +537,9 @@
             ctx.lineCap = 'round';
             let drawing = false;
 
-            // Preenche o fundo de branco puro para o canvas
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Carrega assinatura prévia se existir
             if(state.adminReceiptInfo.signatureDataUrl) {
                 const img = new Image();
                 img.onload = () => ctx.drawImage(img, 0, 0);
@@ -449,7 +548,6 @@
 
             const getPos = (e) => {
                 const rect = canvas.getBoundingClientRect();
-                // Calcula a escala para garantir precisão do traço independentemente do tamanho da tela do celular
                 const scaleX = canvas.width / rect.width;
                 const scaleY = canvas.height / rect.height;
                 const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -459,7 +557,6 @@
 
             const start = (e) => { 
                 e.preventDefault(); 
-                // Fecha o teclado do celular para não atrapalhar o desenho
                 if(document.activeElement) document.activeElement.blur(); 
                 drawing = true; 
                 const pos = getPos(e); 
@@ -477,7 +574,6 @@
         };
 
         window.shareReceiptImage = async () => {
-            // Se a imagem já foi gerada no primeiro clique, faz o envio direto no segundo clique (Evita bloqueio de segurança do Navegador)
             if (state.generatedReceiptFile) {
                 if (navigator.canShare && navigator.canShare({ files: [state.generatedReceiptFile] })) {
                     try {
@@ -498,7 +594,6 @@
                 return;
             }
 
-            // Primeiro clique: Inicia a geração da Imagem
             const btn = document.getElementById('btn-share-receipt');
             const origHTML = btn.innerHTML;
             btn.innerHTML = '<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i> Processando Imagem...';
@@ -506,12 +601,10 @@
             
             const element = document.getElementById('receipt-capture-area');
             
-            // Remove limites de rolagem temporariamente para evitar corte na imagem gerada (Bug de altura em celulares)
             const modalBox = document.getElementById('receipt-modal-box');
             const scrollBox = document.getElementById('receipt-scroll-box');
             const overlay = modalBox ? modalBox.parentElement : null;
             
-            // 1. Tira as amarras da tela (fixed/max-height) para deixar o recibo renderizar 100% solto até o final
             if (overlay) {
                 overlay.style.position = 'absolute';
                 overlay.style.alignItems = 'flex-start';
@@ -523,19 +616,16 @@
                 scrollBox.scrollTop = 0; 
             }
             
-            // Aguarda o navegador aplicar as mudanças de CSS e expandir o div virtualmente
             await new Promise(r => setTimeout(r, 200));
             
             try {
-                // Gera a imagem capturando o design HTML do recibo em alta definição
                 const canvas = await html2canvas(element, { 
                     scale: 2, 
                     backgroundColor: '#ffffff', 
                     useCORS: true,
-                    scrollY: -window.scrollY // Garante que a foto pega do topo caso a pessoa tenha rolado pra baixo
+                    scrollY: -window.scrollY 
                 });
                 
-                // Restaura os limites de rolagem da tela IMEDIATAMENTE após bater a foto
                 if (overlay) {
                     overlay.style.position = '';
                     overlay.style.alignItems = '';
@@ -546,9 +636,8 @@
 
                 canvas.toBlob(async (blob) => {
                     const file = new File([blob], 'recibo-pit.png', { type: 'image/png' });
-                    state.generatedReceiptFile = file; // Salva para o próximo clique
+                    state.generatedReceiptFile = file; 
                     
-                    // --- EXIBE A IMAGEM GERADA NA TELA PARA CONFERÊNCIA ANTES DE ENVIAR ---
                     const captureArea = document.getElementById('receipt-capture-area');
                     if (captureArea) captureArea.style.display = 'none';
                     
@@ -572,9 +661,7 @@
                     
                     const modalTitle = document.getElementById('receipt-modal-title');
                     if (modalTitle) modalTitle.innerHTML = '<i data-lucide="check-circle" class="text-brand-success w-5 h-5"></i> Imagem Pronta';
-                    // ------------------------------------------------------------------------
                     
-                    // Transforma o botão para a liberação do Share nativo
                     btn.disabled = false;
                     btn.innerHTML = '<i data-lucide="send" class="w-5 h-5"></i> Confirmar e Enviar para o WhatsApp';
                     btn.classList.remove('bg-[#10B981]', 'hover:bg-green-600');
@@ -586,7 +673,6 @@
                 btn.disabled = false;
                 btn.innerHTML = origHTML;
                 
-                // Restaura os limites caso dê algum erro também
                 if (overlay) {
                     overlay.style.position = '';
                     overlay.style.alignItems = '';
@@ -859,53 +945,127 @@
                         <form onsubmit="handleAddTransaction(event)" class="space-y-4">
                             <div class="flex gap-4">
                                 <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-success has-[:checked]:bg-brand-success/10 has-[:checked]:text-brand-success border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
-                                    <input type="radio" name="transType" value="income" checked class="hidden"/>
+                                    <input type="radio" name="transType" value="income" onchange="toggleExpenseFields()" checked class="hidden"/>
                                     <i data-lucide="plus" class="w-5 h-5"></i> Receita
                                 </label>
                                 <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-danger has-[:checked]:bg-brand-danger/10 has-[:checked]:text-brand-danger border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
-                                    <input type="radio" name="transType" value="expense" class="hidden"/>
+                                    <input type="radio" name="transType" value="expense" onchange="toggleExpenseFields()" class="hidden"/>
                                     <i data-lucide="minus" class="w-5 h-5"></i> Despesa
                                 </label>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <input type="text" id="newTransDesc" placeholder="Descrição" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
                                 <input type="number" id="newTransAmount" step="0.01" placeholder="Valor (R$)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
-                                <input type="date" id="newTransDate" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-brand-muted" title="Retroativo (opcional)"/>
+                                <input type="datetime-local" id="newTransDate" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-brand-muted" title="Data e Hora (opcional)"/>
                             </div>
+
+                            <div id="expenseExtraFields" class="hidden space-y-4 pt-4 border-t border-brand-muted/20">
+                                <h4 class="text-sm font-bold text-brand-warning flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> Detalhes da Compra (Transparência)</h4>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <input type="text" id="newTransLocation" placeholder="Local da Compra (Ex: Supermercado X)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
+                                    <input type="url" id="newTransLink" placeholder="Link da Compra (se internet)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
+                                    <input type="text" id="newTransBuyerName" placeholder="Nome de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
+                                    <input type="text" id="newTransBuyerMat" placeholder="Matrícula de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal</label>
+                                    <input type="file" id="newTransPhoto" accept="image/*" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
+                                </div>
+                            </div>
+
                             <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-2">
                                 <i data-lucide="save" class="w-5 h-5"></i> Gravar Registro
                             </button>
                         </form>
                     </div>` : ''}
 
-                    <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-muted/10 overflow-hidden">
-                        <div class="p-6">
-                            <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="list" class="text-brand-accent"></i> Movimentações de ${state.selectedMonth}</h3>
-                            <div class="overflow-x-auto">
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                        <!-- Tabela de Receitas -->
+                        <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-success/20 overflow-hidden flex flex-col">
+                            <div class="p-5 bg-brand-success/10 border-b border-brand-success/20">
+                                <h3 class="text-lg font-bold flex items-center gap-2 text-brand-success"><i data-lucide="trending-up" class="w-5 h-5"></i> Entradas (Receitas)</h3>
+                            </div>
+                            <div class="p-0 overflow-x-auto flex-1">
                                 <table class="w-full text-left border-collapse">
                                     <thead>
-                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm">
+                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm bg-brand-dark/50">
                                             <th class="py-3 px-4 font-medium">Data</th>
                                             <th class="py-3 px-4 font-medium">Descrição</th>
                                             <th class="py-3 px-4 font-medium text-right">Valor</th>
-                                            ${state.isAdmin ? `<th class="py-3 px-4 font-medium text-center">Ações</th>` : ''}
+                                            ${state.isAdmin ? '<th class="py-3 px-4 font-medium text-center">Ações</th>' : ''}
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${filteredTransactions.length === 0 ? `
+                                        ${filteredTransactions.filter(t => t.type === 'income').length === 0 ? `
                                             <tr>
-                                                <td colspan="4" class="py-10 text-center text-brand-muted">
-                                                    Nenhum registro encontrado neste mês.
+                                                <td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">
+                                                    Nenhuma receita neste mês.
                                                 </td>
                                             </tr>
-                                        ` : filteredTransactions.slice().reverse().map(tx => `
+                                        ` : filteredTransactions.filter(t => t.type === 'income').slice().reverse().map(tx => `
                                             <tr class="border-b border-brand-muted/5 hover:bg-brand-dark/30 transition-colors group">
                                                 <td class="py-4 px-4 text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
                                                 <td class="py-4 px-4">
                                                     <p class="font-bold text-white">${tx.description}</p>
                                                 </td>
-                                                <td class="py-4 px-4 text-right font-bold ${tx.type === 'income' ? 'text-brand-success' : 'text-brand-danger'} whitespace-nowrap">
-                                                    ${tx.type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}
+                                                <td class="py-4 px-4 text-right font-bold text-brand-success whitespace-nowrap">
+                                                    +${formatCurrency(tx.amount)}
+                                                </td>
+                                                ${state.isAdmin ? `
+                                                <td class="py-4 px-4">
+                                                    <div class="flex items-center justify-center gap-2">
+                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
+                                                            <i data-lucide="receipt" class="w-5 h-5"></i>
+                                                        </button>
+                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-2 rounded-lg transition-colors border border-transparent hover:border-brand-danger/30">
+                                                            <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>` : ''}
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Tabela de Despesas -->
+                        <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-danger/20 overflow-hidden flex flex-col">
+                            <div class="p-5 bg-brand-danger/10 border-b border-brand-danger/20">
+                                <h3 class="text-lg font-bold flex items-center gap-2 text-brand-danger"><i data-lucide="trending-down" class="w-5 h-5"></i> Saídas (Despesas)</h3>
+                            </div>
+                            <div class="p-0 overflow-x-auto flex-1">
+                                <table class="w-full text-left border-collapse">
+                                    <thead>
+                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm bg-brand-dark/50">
+                                            <th class="py-3 px-4 font-medium">Data</th>
+                                            <th class="py-3 px-4 font-medium">Descrição</th>
+                                            <th class="py-3 px-4 font-medium text-right">Valor</th>
+                                            ${state.isAdmin ? '<th class="py-3 px-4 font-medium text-center">Ações</th>' : ''}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${filteredTransactions.filter(t => t.type === 'expense').length === 0 ? `
+                                            <tr>
+                                                <td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">
+                                                    Nenhuma despesa neste mês.
+                                                </td>
+                                            </tr>
+                                        ` : filteredTransactions.filter(t => t.type === 'expense').slice().reverse().map(tx => `
+                                            <tr class="border-b border-brand-muted/5 hover:bg-brand-dark/30 transition-colors group">
+                                                <td class="py-4 px-4 text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                                                <td class="py-4 px-4">
+                                                    <div class="flex flex-col items-start gap-1">
+                                                        <p class="font-bold text-white">${tx.description}</p>
+                                                        ${(tx.purchaseLocation || tx.purchaseLink || tx.buyerName || tx.receiptImage) ? `
+                                                            <button onclick="openDetailsModal('${tx.id}')" title="Ver Detalhes da Compra" class="bg-brand-warning/10 text-brand-warning hover:bg-brand-warning/20 px-2 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors border border-brand-warning/20 hover:border-brand-warning/40 mt-1">
+                                                                <i data-lucide="search" class="w-3 h-3"></i> Transparência
+                                                            </button>
+                                                        ` : ''}
+                                                    </div>
+                                                </td>
+                                                <td class="py-4 px-4 text-right font-bold text-brand-danger whitespace-nowrap">
+                                                    -${formatCurrency(tx.amount)}
                                                 </td>
                                                 ${state.isAdmin ? `
                                                 <td class="py-4 px-4">
@@ -983,7 +1143,12 @@
                             <input type="email" placeholder="E-mail do Administrador" value="${state.loginEmail}" onchange="state.loginEmail=this.value" class="w-full bg-brand-dark border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white placeholder-brand-muted" required autofocus/>
                             
                             ${!state.isResetting ? `
-                            <input type="password" placeholder="Senha" value="${state.loginPassword}" onchange="state.loginPassword=this.value" class="w-full bg-brand-dark border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                            <div class="relative">
+                                <input type="${state.showPassword ? 'text' : 'password'}" placeholder="Senha" value="${state.loginPassword}" onchange="state.loginPassword=this.value" class="w-full bg-brand-dark border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
+                                <button type="button" onclick="togglePassword()" class="absolute right-3 top-3.5 text-brand-muted hover:text-white transition-colors" title="Mostrar/Ocultar Senha">
+                                    <i data-lucide="${state.showPassword ? 'eye-off' : 'eye'}" class="w-5 h-5"></i>
+                                </button>
+                            </div>
                             ` : ''}
                             
                             ${state.loginError ? `<p class="text-brand-warning text-sm mt-2 text-center bg-brand-warning/10 p-2 rounded-lg">${state.loginError}</p>` : ''}
@@ -1005,17 +1170,86 @@
                 </div>`;
             }
 
+            if (state.showDetailsModal && state.detailsTx) {
+                const tx = state.detailsTx;
+                let txTime = "00:00";
+                if (tx.createdAt) {
+                    const dateObj = new Date(tx.createdAt);
+                    if(!isNaN(dateObj)) txTime = dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+                }
+
+                content += `
+                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+                    <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
+                        <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
+                            <h3 class="font-bold text-lg flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="w-5 h-5"></i> Detalhes da Despesa</h3>
+                            <button onclick="closeDetailsModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        <div class="p-6 overflow-y-auto flex-grow space-y-4">
+                            <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
+                                <p class="text-sm text-brand-muted mb-1">Descrição</p>
+                                <p class="font-bold text-white text-lg">${tx.description}</p>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
+                                    <p class="text-sm text-brand-muted mb-1">Valor</p>
+                                    <p class="font-bold text-brand-danger">${formatCurrency(tx.amount)}</p>
+                                </div>
+                                <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
+                                    <p class="text-sm text-brand-muted mb-1">Data / Hora</p>
+                                    <p class="font-bold text-white">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')} às ${txTime}</p>
+                                </div>
+                            </div>
+                            
+                            ${tx.purchaseLocation || tx.purchaseLink || tx.buyerName ? `
+                            <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10 space-y-3">
+                                <h4 class="font-bold text-brand-warning text-sm uppercase tracking-wider mb-2 border-b border-brand-muted/10 pb-2">Informações da Compra</h4>
+                                
+                                ${tx.purchaseLocation ? `
+                                <div>
+                                    <p class="text-xs text-brand-muted">Local / Estabelecimento</p>
+                                    <p class="text-sm text-white font-medium">${tx.purchaseLocation}</p>
+                                </div>` : ''}
+                                
+                                ${tx.purchaseLink ? `
+                                <div>
+                                    <p class="text-xs text-brand-muted">Link de Compra</p>
+                                    <a href="${tx.purchaseLink.startsWith('http') ? tx.purchaseLink : 'https://'+tx.purchaseLink}" target="_blank" class="text-sm text-brand-accent hover:underline flex items-center gap-1">
+                                        Acessar página do produto <i data-lucide="external-link" class="w-3 h-3"></i>
+                                    </a>
+                                </div>` : ''}
+                                
+                                ${tx.buyerName ? `
+                                <div class="flex items-center gap-2 pt-2 border-t border-brand-muted/5 mt-2">
+                                    <div class="bg-brand-panel p-2 rounded-full border border-brand-muted/10"><i data-lucide="user" class="w-4 h-4 text-brand-muted"></i></div>
+                                    <div>
+                                        <p class="text-xs text-brand-muted">Comprador / Responsável</p>
+                                        <p class="text-sm text-white font-bold">${tx.buyerName} ${tx.buyerMatricula ? `<span class="text-xs font-normal text-brand-muted ml-1">(Mat: ${tx.buyerMatricula})</span>` : ''}</p>
+                                    </div>
+                                </div>` : ''}
+                            </div>
+                            ` : ''}
+                            
+                            ${tx.receiptImage ? `
+                            <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
+                                <p class="text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Foto do Produto / Nota Fiscal</p>
+                                <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal ou Produto" />
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>`;
+            }
+
             if (state.showReceiptModal && state.receiptTx) {
                 const tx = state.receiptTx;
                 
-                // Buscar Matrícula caso seja um contribuinte registrado
                 let matInfo = "N/A";
                 if (tx.memberId) {
                     const found = state.members.find(m => m.id === tx.memberId);
                     if (found) matInfo = found.matricula;
                 }
 
-                // Definir Hora e Data Exata
                 let txTime = "00:00";
                 let formattedDate = tx.date || "Sem Data";
                 if (tx.createdAt) {
@@ -1026,7 +1260,6 @@
                     }
                 }
                 
-                // Mês por extenso
                 const monthName = { 'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril', 'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto', 'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro' }[tx.month] || tx.month;
 
                 content += `
@@ -1040,7 +1273,6 @@
                         <div id="receipt-scroll-box" class="p-6 overflow-y-auto flex-grow flex flex-col gap-6">
                             
                             ${state.isEditingReceiptSettings ? `
-                                <!-- Tela de Edição de Dados do Administrador -->
                                 <div class="bg-brand-dark p-5 rounded-xl border border-brand-muted/20">
                                     <h4 class="font-bold mb-4 text-brand-accent flex items-center gap-2"><i data-lucide="pen-tool"></i> Dados do Emissor (Ficará Salvo)</h4>
                                     <div class="space-y-4">
@@ -1061,13 +1293,11 @@
                                     </div>
                                 </div>
                             ` : `
-                                <!-- Visualização do Recibo para Captura -->
                                 <div id="edit-receipt-btn-container" class="flex justify-end">
                                     <button onclick="toggleEditReceiptSettings()" class="text-xs text-brand-accent hover:underline flex items-center gap-1"><i data-lucide="edit-3" class="w-3 h-3"></i> Editar Assinatura / Nome</button>
                                 </div>
 
                                 <div id="receipt-capture-area" class="bg-white text-black p-8 rounded-sm shadow-sm relative overflow-hidden shrink-0" style="font-family: Arial, sans-serif;">
-                                    <!-- Marca d'água -->
                                     <div class="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"></path></svg>
                                     </div>
@@ -1121,7 +1351,6 @@
             app.innerHTML = content;
             lucide.createIcons();
 
-            // Ativa o canvas se estiver no modo de edição do modal de recibos
             if (state.showReceiptModal && state.isEditingReceiptSettings) {
                 initSignatureCanvas();
             }
