@@ -342,6 +342,15 @@
             const file = e.target.files[0];
             if (!file) { state.expenseImageBase64 = null; return; }
             
+            if (file.type === 'application/pdf') {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    state.expenseImageBase64 = event.target.result;
+                };
+                reader.readAsDataURL(file);
+                return;
+            }
+
             const reader = new FileReader();
             reader.onload = (event) => {
                 const img = new Image();
@@ -377,6 +386,49 @@
             state.showDetailsModal = false;
             state.detailsTx = null;
             render();
+        };
+
+        window.viewPDF = (id) => {
+            const tx = state.transactions.find(t => t.id === id);
+            if (!tx || !tx.receiptImage) return;
+
+            const container = document.getElementById(`pdf-viewer-container-${id}`);
+            const btn = document.getElementById(`btn-view-pdf-${id}`);
+
+            if (container) {
+                // Se já estiver aberto, ele oculta a visualização (fecha)
+                if (!container.classList.contains('hidden')) {
+                    container.classList.add('hidden');
+                    container.innerHTML = '';
+                    if (btn) btn.innerHTML = '<i data-lucide="eye" class="w-5 h-5"></i> Visualizar na Tela';
+                    if (window.lucide) lucide.createIcons();
+                    return;
+                }
+
+                // Se estiver fechado, injeta um leitor de PDF do próprio navegador dentro do modal
+                try {
+                    const base64Data = tx.receiptImage.split(',')[1];
+                    if (!base64Data) return;
+                    
+                    const byteCharacters = atob(base64Data);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], {type: 'application/pdf'});
+                    const blobUrl = URL.createObjectURL(blob);
+                    
+                    container.classList.remove('hidden');
+                    container.innerHTML = `<iframe src="${blobUrl}#view=FitH" class="w-full h-full border-none bg-white"></iframe>`;
+                    
+                    if (btn) btn.innerHTML = '<i data-lucide="eye-off" class="w-5 h-5"></i> Ocultar PDF';
+                    if (window.lucide) lucide.createIcons();
+                } catch (e) {
+                    console.error("Erro ao gerar visualização do PDF: ", e);
+                    alert("Não foi possível renderizar a visualização. Tente baixar o arquivo.");
+                }
+            }
         };
 
         window.togglePassword = () => {
@@ -968,8 +1020,8 @@
                                     <input type="text" id="newTransBuyerMat" placeholder="Matrícula de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                 </div>
                                 <div>
-                                    <label class="block text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal</label>
-                                    <input type="file" id="newTransPhoto" accept="image/*" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
+                                    <label class="block text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal (Imagem ou PDF)</label>
+                                    <input type="file" id="newTransPhoto" accept="image/*,application/pdf" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
                                 </div>
                             </div>
 
@@ -1233,7 +1285,23 @@
                             ${tx.receiptImage ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
                                 <p class="text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Foto do Produto / Nota Fiscal</p>
-                                <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal ou Produto" />
+                                ${tx.receiptImage.startsWith('data:application/pdf') ? `
+                                    <div class="flex flex-col items-center justify-center p-6 border-2 border-dashed border-brand-muted/20 rounded-lg bg-brand-panel transition-all">
+                                        <i data-lucide="file-text" class="w-12 h-12 text-brand-danger mb-3"></i>
+                                        <p class="text-white font-bold mb-4">Documento PDF Anexado</p>
+                                        <div class="flex flex-col sm:flex-row gap-3 w-full justify-center">
+                                            <a href="${tx.receiptImage}" download="comprovante.pdf" class="bg-brand-danger hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                                <i data-lucide="download" class="w-5 h-5"></i> Baixar PDF
+                                            </a>
+                                            <button onclick="viewPDF('${tx.id}')" id="btn-view-pdf-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
+                                                <i data-lucide="eye" class="w-5 h-5"></i> Visualizar na Tela
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="pdf-viewer-container-${tx.id}" class="hidden w-full h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
+                                ` : `
+                                    <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal ou Produto" />
+                                `}
                             </div>
                             ` : ''}
                         </div>
