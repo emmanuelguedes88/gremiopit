@@ -129,8 +129,6 @@
             
             membersViewMode: window.innerWidth < 768 ? 'monthly' : 'panorama', 
             showReceiptModal: false,
-            membersViewMode: window.innerWidth < 768 ? 'monthly' : 'panorama', // Panorama vs Mensal
-            showReceiptModal: false,
             receiptTx: null,
             isEditingReceiptSettings: false,
             adminReceiptInfo: JSON.parse(localStorage.getItem('gremio_admin_receipt_info') || '{"name":"","matricula":"","signatureDataUrl":""}'),
@@ -396,7 +394,6 @@
             const btn = document.getElementById(`btn-view-pdf-${id}`);
 
             if (container) {
-                // Se já estiver aberto, ele oculta a visualização (fecha)
                 if (!container.classList.contains('hidden')) {
                     container.classList.add('hidden');
                     container.innerHTML = '';
@@ -405,7 +402,6 @@
                     return;
                 }
 
-                // Se estiver fechado, injeta um leitor de PDF do próprio navegador dentro do modal
                 try {
                     const base64Data = tx.receiptImage.split(',')[1];
                     if (!base64Data) return;
@@ -447,7 +443,6 @@
             
             let formattedDate = new Date().toLocaleDateString('pt-BR');
             let timestamp = Date.now();
-            // Se o usuário selecionou uma data e hora retroativa, usamos ela
             if (dateInput) {
                 const d = new Date(dateInput);
                 formattedDate = d.toLocaleDateString('pt-BR');
@@ -477,7 +472,6 @@
                 });
                 logAction(`Registro (${type === 'income' ? 'Receita' : 'Despesa'}): ${desc} - R$ ${amount}`);
                 
-                // Limpa os campos do formulário após gravar
                 document.getElementById('newTransDesc').value = '';
                 document.getElementById('newTransAmount').value = '';
                 document.getElementById('newTransDate').value = '';
@@ -521,6 +515,39 @@
             const encoded = encodeURIComponent(text);
             window.open(`https://wa.me/?text=${encoded}`, '_blank');
             logAction(`Relatório do mês de ${m} exportado para o WhatsApp.`);
+        };
+
+        window.exportMembersReport = function() {
+            const m = state.selectedMonth;
+            const paid = [];
+
+            // Mantendo a sua lógica original que identifica quem pagou
+            state.members.forEach(member => {
+                if (member.payments && member.payments[m]) {
+                    if (!paid.includes(member.name)) {
+                        paid.push(member.name);
+                    }
+                }
+            });
+
+            // Ordenar alfabeticamente
+            paid.sort();
+
+            let text = `*PAGANTES DO MÊS - GRÊMIO PIT* 🚔\n`;
+            text += `*Mês Referência:* ${m}\n\n`;
+
+            text += `✅ *POLICIAIS QUITES (${paid.length}):*\n`;
+            if (paid.length === 0) {
+                text += `Nenhum pagamento registrado neste mês.\n`;
+            } else {
+                paid.forEach(name => text += `✓ ${name}\n`);
+            }
+
+            text += `\n_Resumo gerado automaticamente pelo Sistema._`;
+
+            const encoded = encodeURIComponent(text);
+            window.open(`https://wa.me/?text=${encoded}`, '_blank');
+            logAction(`Relatório de pagantes do mês de ${m} exportado para o WhatsApp.`);
         };
 
         window.openReceiptModal = (id) => {
@@ -834,7 +861,13 @@
                     <div class="flex items-center gap-3">
                         ${state.activeTab === 'dashboard' ? `
                             <button onclick="exportReport()" class="bg-[#10B981]/10 text-[#10B981] hover:bg-[#10B981]/20 border border-[#10B981]/30 transition-colors px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-sm">
-                                <i data-lucide="share-2" class="w-4 h-4"></i> Relatório do Mês
+                                <i data-lucide="share-2" class="w-4 h-4"></i> Relatório Financeiro
+                            </button>
+                        ` : ''}
+                        
+                        ${state.activeTab === 'members' ? `
+                            <button onclick="exportMembersReport()" class="bg-[#3B82F6]/10 text-[#3B82F6] hover:bg-[#3B82F6]/20 border border-[#3B82F6]/30 transition-colors px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-sm">
+                                <i data-lucide="share-2" class="w-4 h-4"></i> Relatório de Pagantes
                             </button>
                         ` : ''}
                         
