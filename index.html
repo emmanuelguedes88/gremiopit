@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -55,7 +56,6 @@
             filter: drop-shadow(0 0 5px rgba(255,255,255,0.1));
         }
 
-        /* Animação para o alerta customizado */
         @keyframes fadeInAlert {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -109,7 +109,13 @@
         const auth = getAuth(app);
         const APP_ID = 'gremiopit-v1';
         
-        const MONTHS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+        // TRADUTOR DE MESES: Garante que os registros salvos como "Ago", "Set" sejam lidos como "Agosto", "Setembro" sem perder dados
+        const MONTH_MAP = {
+            'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril',
+            'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto',
+            'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro'
+        };
+        const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
         const currentMonthName = MONTHS[new Date().getMonth()];
         
         let state = {
@@ -137,19 +143,23 @@
             expenseImageBase64: null,
             showDetailsModal: false,
             detailsTx: null,
-            showPassword: false
+            showPassword: false,
+            
+            memberSearchQuery: '',
+            memberPaymentFilter: 'all',
+            editingMemberId: null,
+            editMemberData: { rank: '', name: '', matricula: '' }
         };
 
         window.state = state;
 
-        /* Override nativo para alert() visando respeitar regra de UI sem alterar a lógica preexistente */
         window.alert = (message) => {
             const modal = document.createElement('div');
             modal.className = 'fixed top-4 right-4 bg-brand-panel border-l-4 border-brand-accent text-white p-4 rounded shadow-2xl z-[9999] flex items-center gap-3 animate-fade-in';
             modal.innerHTML = `<i data-lucide="info" class="text-brand-accent"></i> <div>${message}</div>`;
             document.body.appendChild(modal);
             if(window.lucide) lucide.createIcons({root: modal});
-            setTimeout(() => modal.remove(), 4000);
+            setTimeout(() => modal.remove(), 5000);
         };
 
         let unsubMembers = null;
@@ -169,6 +179,35 @@
             } catch (error) { console.error("Erro ao salvar log", error); }
         };
 
+        // Função Raio-X Inteligente Aprimorada (Corrige vínculo de pagamentos antigos)
+        const matchMemberToTx = (tx) => {
+            if (!tx) return null;
+            if (tx.memberId) {
+                const m = state.members.find(x => x.id === tx.memberId);
+                if (m) return m;
+            }
+            const tDescLower = String(tx.description || '').toLowerCase();
+            
+            // Filtro que remove acentos, patentes (SGT, CB, SD) e caracteres especiais para igualar as palavras
+            const normalize = (str) => {
+                return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+                          .replace(/[^a-z0-9 ]/g, "")
+                          .replace(/\b(sd|cb|sgt|3 sgt|2 sgt|1 sgt|st|ten|cap|maj|tc|cel)\b/g, "")
+                          .replace(/\s+/g, " ").trim();
+            };
+            
+            const normDesc = normalize(tDescLower);
+
+            return state.members.find(m => {
+                const normName = normalize(String(m.name || '').toLowerCase());
+                if(!normName || !normDesc) return false;
+                
+                return normName === normDesc || 
+                       (normName.length > 3 && normDesc.includes(normName)) ||
+                       (normDesc.length > 3 && normName.includes(normDesc));
+            });
+        };
+
         function setupListeners() {
             if (unsubMembers) unsubMembers();
             if (unsubTrans) unsubTrans();
@@ -180,7 +219,19 @@
 
             unsubMembers = onSnapshot(membersRef, (snapshot) => {
                 if(isTransitioningAuth) return;
-                state.members = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                state.members = snapshot.docs.map(doc => {
+                    let d = doc.data();
+                    // AUTOCURA DOS MESES: Traduz 'Ago' para 'Agosto' na listagem de pagamentos do Policial
+                    if(d.payments) {
+                        let healedPayments = {};
+                        Object.keys(d.payments).forEach(k => {
+                            let newKey = MONTH_MAP[k] || k;
+                            healedPayments[newKey] = d.payments[k];
+                        });
+                        d.payments = healedPayments;
+                    }
+                    return { id: doc.id, ...d };
+                }).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
                 state.dbError = null;
                 render();
             }, (error) => {
@@ -191,7 +242,12 @@
 
             unsubTrans = onSnapshot(transRef, (snapshot) => {
                 if(isTransitioningAuth) return;
-                state.transactions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                state.transactions = snapshot.docs.map(doc => {
+                    let d = doc.data();
+                    // AUTOCURA DOS MESES: Traduz 'Ago' para 'Agosto' nas transações financeiras
+                    if(MONTH_MAP[d.month]) d.month = MONTH_MAP[d.month];
+                    return { id: doc.id, ...d };
+                }).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
                 state.dbError = null;
                 render();
             }, (error) => {
@@ -267,19 +323,53 @@
 
         window.handleAddMember = async (e) => {
             e.preventDefault();
-            const name = document.getElementById('newMemberName').value;
-            const mat = document.getElementById('newMemberMatricula').value;
+            const rank = document.getElementById('newMemberRank').value;
+            const name = document.getElementById('newMemberName').value.trim();
+            const mat = document.getElementById('newMemberMatricula').value.trim();
             if (!name || !mat || !state.user) return;
             
+            const exists = state.members.find(m => m.matricula === mat || m.name.toLowerCase() === name.toLowerCase());
+            if (exists) {
+                alert(`Policial já cadastrado! Verifique: ${exists.rank || ''} ${exists.name}`);
+                return;
+            }
+
             try {
                 await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'members'), {
+                    rank: rank,
                     name: name,
                     matricula: mat,
                     payments: {},
                     createdAt: Date.now()
                 });
-                logAction(`Novo Policial adicionado: ${name}`);
+                logAction(`Novo Policial adicionado: ${rank} ${name}`);
             } catch (error) { console.error(error); }
+        };
+
+        window.startEditMember = (id) => {
+            const member = state.members.find(m => m.id === id);
+            if(!member) return;
+            state.editingMemberId = id;
+            state.editMemberData = { rank: member.rank || '', name: member.name || '', matricula: member.matricula || '' };
+            render();
+        };
+
+        window.cancelEditMember = () => {
+            state.editingMemberId = null;
+            render();
+        };
+
+        window.saveEditMember = async (e) => {
+            e.preventDefault();
+            try {
+                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'members', state.editingMemberId), {
+                    rank: state.editMemberData.rank,
+                    name: state.editMemberData.name,
+                    matricula: state.editMemberData.matricula
+                });
+                logAction(`Policial atualizado: ${state.editMemberData.rank} ${state.editMemberData.name}`);
+                state.editingMemberId = null;
+            } catch(e) { console.error(e); }
         };
 
         window.togglePayment = async (memberId, month) => {
@@ -287,7 +377,9 @@
             const member = state.members.find(m => m.id === memberId);
             if (!member) return;
             
-            const isCurrentlyPaid = (member.payments || {})[month];
+            const existingTx = state.transactions.find(t => t.type === 'income' && t.month === month && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
+
+            const isCurrentlyPaid = (member.payments || {})[month] || !!existingTx;
             const newStatus = !isCurrentlyPaid;
 
             try {
@@ -296,25 +388,25 @@
                 });
 
                 if (newStatus) {
-                    await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'), {
-                        type: 'income',
-                        description: member.name, 
-                        amount: 10,
-                        month: month,
-                        date: new Date().toLocaleDateString('pt-BR'),
-                        isAuto: true,
-                        memberId: member.id,
-                        createdAt: Date.now()
-                    });
-                    logAction(`Pagamento confirmado para ${member.name} (Ref: ${month})`);
-                } else {
-                    const txToDelete = state.transactions.find(t => t.isAuto && t.memberId === member.id && t.month === month);
-                    if (txToDelete) {
-                        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', txToDelete.id));
+                    if (!existingTx) {
+                        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'), {
+                            type: 'income',
+                            description: member.name, 
+                            amount: 10,
+                            month: month,
+                            date: new Date().toLocaleDateString('pt-BR'),
+                            isAuto: true,
+                            memberId: member.id,
+                            createdAt: Date.now()
+                        });
+                        logAction(`Pagamento confirmado: ${member.rank || ''} ${member.name} (${month})`);
                     }
-                    logAction(`Pagamento estornado de ${member.name} (Ref: ${month})`);
+                } else {
+                    if (existingTx) {
+                        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', existingTx.id));
+                        logAction(`Pagamento estornado: ${member.rank || ''} ${member.name} (${month})`);
+                    }
                 }
-
             } catch (error) { console.error(error); }
         };
 
@@ -323,7 +415,7 @@
             const member = state.members.find(m => m.id === id);
             try { 
                 await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'members', id)); 
-                if(member) logAction(`Policial removido: ${member.name}`);
+                if(member) logAction(`Policial removido: ${member.rank || ''} ${member.name}`);
             } catch(e) {}
         };
 
@@ -389,7 +481,6 @@
         window.viewPDF = (id) => {
             const tx = state.transactions.find(t => t.id === id);
             if (!tx || !tx.receiptImage) return;
-
             const container = document.getElementById(`pdf-viewer-container-${id}`);
             const btn = document.getElementById(`btn-view-pdf-${id}`);
 
@@ -401,7 +492,6 @@
                     if (window.lucide) lucide.createIcons();
                     return;
                 }
-
                 try {
                     const base64Data = tx.receiptImage.split(',')[1];
                     if (!base64Data) return;
@@ -521,16 +611,16 @@
             const m = state.selectedMonth;
             const paid = [];
 
-            // Mantendo a sua lógica original que identifica quem pagou
             state.members.forEach(member => {
-                if (member.payments && member.payments[m]) {
-                    if (!paid.includes(member.name)) {
-                        paid.push(member.name);
+                const hasTx = state.transactions.some(t => t.type === 'income' && t.month === m && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
+                if ((member.payments && member.payments[m]) || hasTx) {
+                    const rankStr = member.rank ? `${member.rank} ` : '';
+                    if (!paid.includes(rankStr + member.name)) {
+                        paid.push(rankStr + member.name);
                     }
                 }
             });
 
-            // Ordenar alfabeticamente
             paid.sort();
 
             let text = `*PAGANTES DO MÊS - GRÊMIO PIT* 🚔\n`;
@@ -547,10 +637,30 @@
 
             const encoded = encodeURIComponent(text);
             window.open(`https://wa.me/?text=${encoded}`, '_blank');
-            logAction(`Relatório de pagantes do mês de ${m} exportado para o WhatsApp.`);
+            logAction(`Relatório de pagantes de ${m} exportado para o WhatsApp.`);
+        };
+
+        window.openReceiptFromMember = (memberId, month) => {
+            if (!state.user || !state.isAdmin) {
+                alert("Acesso Negado: Apenas o administrador pode gerar recibos.");
+                return;
+            }
+            
+            const member = state.members.find(m => m.id === memberId);
+            if (!member) return;
+            
+            const tx = state.transactions.find(t => t.type === 'income' && t.month === month && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
+
+            if (tx) {
+                openReceiptModal(tx.id);
+            } else {
+                alert("O recibo oficial deste pagamento não foi encontrado. Tente desmarcar (X) e marcar novamente para gerar um novo comprovante no sistema.");
+            }
         };
 
         window.openReceiptModal = (id) => {
+            if (!state.user || !state.isAdmin) return;
+            
             const tx = state.transactions.find(t => t.id === id);
             if(!tx) return;
             state.receiptTx = tx;
@@ -654,23 +764,29 @@
 
         window.shareReceiptImage = async () => {
             if (state.generatedReceiptFile) {
-                if (navigator.canShare && navigator.canShare({ files: [state.generatedReceiptFile] })) {
-                    try {
+                try {
+                    // Try native share API first
+                    if (navigator.share && navigator.canShare && navigator.canShare({ files: [state.generatedReceiptFile] })) {
                         await navigator.share({
                             files: [state.generatedReceiptFile],
                             title: 'Recibo PIT',
                             text: 'Segue em anexo o recibo da movimentação.'
                         });
-                    } catch(e) { console.error("Cancelado ou erro no share", e); }
-                } else {
+                        return;
+                    } else {
+                        throw new Error("Share API files not supported");
+                    }
+                } catch(e) { 
+                    console.warn("Fallback de compartilhamento acionado: ", e);
+                    // Fallback to Download Image
                     const url = URL.createObjectURL(state.generatedReceiptFile);
                     const a = document.createElement('a');
                     a.href = url;
                     a.download = 'recibo-pit.png';
                     a.click();
-                    alert('Recibo salvo no dispositivo! Agora é só anexar no WhatsApp.');
+                    alert('Recibo salvo no seu dispositivo! Agora é só anexar no WhatsApp.');
+                    return;
                 }
-                return;
             }
 
             const btn = document.getElementById('btn-share-receipt');
@@ -679,7 +795,6 @@
             btn.disabled = true;
             
             const element = document.getElementById('receipt-capture-area');
-            
             const modalBox = document.getElementById('receipt-modal-box');
             const scrollBox = document.getElementById('receipt-scroll-box');
             const overlay = modalBox ? modalBox.parentElement : null;
@@ -761,6 +876,7 @@
                 if(scrollBox) scrollBox.style.overflow = '';
                 
                 lucide.createIcons();
+                alert("Ocorreu um erro ao gerar a imagem do recibo.");
             }
         };
 
@@ -769,6 +885,8 @@
         window.toggleModal = (show) => { state.showLoginModal = show; state.loginError = ''; render(); };
         window.toggleReset = (reset) => { state.isResetting = reset; state.loginError = ''; render(); };
         window.toggleMembersViewMode = () => { state.membersViewMode = state.membersViewMode === 'panorama' ? 'monthly' : 'panorama'; render(); };
+        window.setMemberFilter = (val) => { state.memberPaymentFilter = val; render(); };
+        window.setMemberSearch = (val) => { state.memberSearchQuery = val; render(); };
 
         function render() {
             const app = document.getElementById('app');
@@ -789,9 +907,9 @@
             const prevBalance = prevIncome - prevExpense;
 
             let content = `
-            <!-- Sidebar -->
-            <nav class="w-full md:w-64 bg-brand-panel p-6 shadow-2xl flex flex-col shrink-0 border-r border-brand-muted/10 z-20 overflow-y-auto">
-                <div class="flex items-center gap-3 mb-10 group cursor-default">
+            <!-- Sidebar (Bottom tab on mobile) -->
+            <nav class="w-full md:w-64 bg-brand-panel md:p-6 shadow-[0_-10px_20px_rgba(0,0,0,0.5)] md:shadow-2xl flex flex-row md:flex-col shrink-0 border-t md:border-t-0 md:border-r border-brand-muted/10 z-50 fixed bottom-0 md:relative md:bottom-auto order-last md:order-first overflow-x-auto md:overflow-y-auto">
+                <div class="hidden md:flex items-center gap-3 mb-10 group cursor-default">
                     <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-[#1E293B] to-[#0F172A] flex items-center justify-center shadow-lg border-2 border-[#EAB308]">
                         <i data-lucide="shield-half" class="text-[#EAB308] w-7 h-7"></i>
                     </div>
@@ -801,26 +919,26 @@
                     </div>
                 </div>
 
-                <div class="space-y-2 flex-grow">
-                    <button onclick="setTab('dashboard')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'dashboard' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                        <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
-                        <span class="font-medium">Visão Geral</span>
+                <div class="flex flex-row md:flex-col flex-1 w-full md:space-y-2">
+                    <button onclick="setTab('dashboard')" class="flex-1 md:w-full flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 px-2 md:px-4 py-3 md:rounded-lg transition-all duration-300 ${state.activeTab === 'dashboard' ? 'bg-brand-accent/10 md:bg-brand-accent/20 text-brand-accent shadow-inner border-t-2 md:border-t-0 md:border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted border-t-2 md:border-t-0 border-transparent'}">
+                        <i data-lucide="layout-dashboard" class="w-5 h-5 md:w-5 md:h-5"></i>
+                        <span class="text-[10px] md:text-sm font-medium">Resumo</span>
                     </button>
-                    <button onclick="setTab('members')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'members' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                        <i data-lucide="users" class="w-5 h-5"></i>
-                        <span class="font-medium">Contribuintes</span>
+                    <button onclick="setTab('members')" class="flex-1 md:w-full flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 px-2 md:px-4 py-3 md:rounded-lg transition-all duration-300 ${state.activeTab === 'members' ? 'bg-brand-accent/10 md:bg-brand-accent/20 text-brand-accent shadow-inner border-t-2 md:border-t-0 md:border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted border-t-2 md:border-t-0 border-transparent'}">
+                        <i data-lucide="users" class="w-5 h-5 md:w-5 md:h-5"></i>
+                        <span class="text-[10px] md:text-sm font-medium">Tropa</span>
                     </button>
-                    <button onclick="setTab('transactions')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'transactions' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                        <i data-lucide="landmark" class="w-5 h-5"></i>
-                        <span class="font-medium">Fluxo de Caixa</span>
+                    <button onclick="setTab('transactions')" class="flex-1 md:w-full flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 px-2 md:px-4 py-3 md:rounded-lg transition-all duration-300 ${state.activeTab === 'transactions' ? 'bg-brand-accent/10 md:bg-brand-accent/20 text-brand-accent shadow-inner border-t-2 md:border-t-0 md:border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted border-t-2 md:border-t-0 border-transparent'}">
+                        <i data-lucide="landmark" class="w-5 h-5 md:w-5 md:h-5"></i>
+                        <span class="text-[10px] md:text-sm font-medium">Caixa</span>
                     </button>
-                    <button onclick="setTab('audit')" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-300 ${state.activeTab === 'audit' ? 'bg-brand-accent/20 text-brand-accent shadow-inner border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted'}">
-                        <i data-lucide="clipboard-list" class="w-5 h-5"></i>
-                        <span class="font-medium">Auditoria</span>
+                    <button onclick="setTab('audit')" class="flex-1 md:w-full flex flex-col md:flex-row items-center justify-center md:justify-start gap-1 md:gap-3 px-2 md:px-4 py-3 md:rounded-lg transition-all duration-300 ${state.activeTab === 'audit' ? 'bg-brand-accent/10 md:bg-brand-accent/20 text-brand-accent shadow-inner border-t-2 md:border-t-0 md:border-l-4 border-brand-accent' : 'hover:bg-brand-dark text-brand-muted border-t-2 md:border-t-0 border-transparent'}">
+                        <i data-lucide="clipboard-list" class="w-5 h-5 md:w-5 md:h-5"></i>
+                        <span class="text-[10px] md:text-sm font-medium">Auditoria</span>
                     </button>
                 </div>
 
-                <div class="mt-8 pt-6 border-t border-brand-dark">
+                <div class="hidden md:block mt-8 pt-6 border-t border-brand-dark">
                     ${!state.isAdmin ? `
                         <button onclick="toggleModal(true)" class="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-brand-muted hover:bg-brand-dark transition-colors">
                             <i data-lucide="lock" class="w-5 h-5"></i>
@@ -836,8 +954,27 @@
             </nav>
 
             <!-- Main Content -->
-            <main class="flex-1 p-6 md:p-10 overflow-y-auto z-10 relative">
+            <main class="flex-1 p-4 md:p-10 overflow-y-auto pb-24 md:pb-10 z-10 relative w-full">
                 
+                <!-- Header Mobile -->
+                <div class="flex md:hidden justify-between items-center mb-6 bg-brand-panel/80 p-3 rounded-xl border border-white/5 backdrop-blur-md">
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-[#1E293B] to-[#0F172A] flex items-center justify-center shadow border border-[#EAB308]">
+                            <i data-lucide="shield-half" class="text-[#EAB308] w-4 h-4"></i>
+                        </div>
+                        <h1 class="font-bold text-white text-sm">Grêmio PIT</h1>
+                    </div>
+                    ${!state.isAdmin ? `
+                        <button onclick="toggleModal(true)" class="text-brand-muted p-2 rounded-lg bg-brand-dark border border-brand-muted/20">
+                            <i data-lucide="lock" class="w-4 h-4"></i>
+                        </button>
+                    ` : `
+                        <button onclick="handleLogout()" class="text-brand-danger p-2 rounded-lg bg-brand-danger/10 border border-brand-danger/30">
+                            <i data-lucide="unlock" class="w-4 h-4"></i>
+                        </button>
+                    `}
+                </div>
+
                 ${state.dbError === 'permission' ? `
                     <div class="mb-6 bg-brand-warning/10 border border-brand-warning/40 text-brand-warning p-4 rounded-xl flex items-start gap-3">
                         <i data-lucide="alert-triangle" class="w-6 h-6 flex-shrink-0 mt-1"></i>
@@ -848,32 +985,32 @@
                     </div>
                 ` : ''}
 
-                <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4 bg-brand-panel/50 p-6 rounded-2xl border border-white/5 backdrop-blur-sm">
+                <header class="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 bg-brand-panel/50 p-4 md:p-6 rounded-2xl border border-white/5 backdrop-blur-sm w-full">
                     <div>
-                        <h2 class="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
-                            ${state.activeTab === 'dashboard' ? '<i data-lucide="layout-dashboard" class="w-8 h-8 text-[#EAB308]"></i> Visão Geral' : 
-                              state.activeTab === 'members' ? '<i data-lucide="users" class="w-8 h-8 text-[#EAB308]"></i> Contribuintes' : 
-                              state.activeTab === 'audit' ? '<i data-lucide="clipboard-list" class="w-8 h-8 text-[#EAB308]"></i> Auditoria' : 
-                              '<i data-lucide="landmark" class="w-8 h-8 text-[#EAB308]"></i> Fluxo de Caixa'}
+                        <h2 class="text-2xl md:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+                            ${state.activeTab === 'dashboard' ? '<i data-lucide="layout-dashboard" class="w-6 h-6 md:w-8 md:h-8 text-[#EAB308]"></i> Visão Geral' : 
+                              state.activeTab === 'members' ? '<i data-lucide="users" class="w-6 h-6 md:w-8 md:h-8 text-[#EAB308]"></i> Contribuintes' : 
+                              state.activeTab === 'audit' ? '<i data-lucide="clipboard-list" class="w-6 h-6 md:w-8 md:h-8 text-[#EAB308]"></i> Auditoria e Transparência' : 
+                              '<i data-lucide="landmark" class="w-6 h-6 md:w-8 md:h-8 text-[#EAB308]"></i> Fluxo de Caixa'}
                         </h2>
                     </div>
                     
-                    <div class="flex items-center gap-3">
+                    <div class="flex flex-wrap items-center gap-3 w-full xl:w-auto justify-end">
                         ${state.activeTab === 'dashboard' ? `
-                            <button onclick="exportReport()" class="bg-[#10B981]/10 text-[#10B981] hover:bg-[#10B981]/20 border border-[#10B981]/30 transition-colors px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-sm">
+                            <button onclick="exportReport()" class="flex-1 md:flex-none justify-center bg-[#10B981]/10 text-[#10B981] hover:bg-[#10B981]/20 border border-[#10B981]/30 transition-colors px-3 md:px-4 py-2 md:py-2.5 rounded-xl flex items-center gap-2 text-sm md:text-base font-semibold shadow-sm">
                                 <i data-lucide="share-2" class="w-4 h-4"></i> Relatório Financeiro
                             </button>
                         ` : ''}
                         
                         ${state.activeTab === 'members' ? `
-                            <button onclick="exportMembersReport()" class="bg-[#3B82F6]/10 text-[#3B82F6] hover:bg-[#3B82F6]/20 border border-[#3B82F6]/30 transition-colors px-4 py-2 rounded-xl flex items-center gap-2 font-semibold shadow-sm">
+                            <button onclick="exportMembersReport()" class="flex-1 md:flex-none justify-center bg-[#3B82F6]/10 text-[#3B82F6] hover:bg-[#3B82F6]/20 border border-[#3B82F6]/30 transition-colors px-3 md:px-4 py-2 md:py-2.5 rounded-xl flex items-center gap-2 text-sm md:text-base font-semibold shadow-sm">
                                 <i data-lucide="share-2" class="w-4 h-4"></i> Relatório de Pagantes
                             </button>
                         ` : ''}
                         
-                        <div class="flex items-center bg-brand-dark p-1 rounded-xl shadow-sm border border-brand-muted/20">
+                        <div class="flex-1 md:flex-none flex items-center justify-between bg-brand-dark p-1 rounded-xl shadow-sm border border-brand-muted/20 min-w-[140px]">
                             <i data-lucide="calendar-days" class="text-brand-muted ml-3 mr-2 w-5 h-5"></i>
-                            <select onchange="setMonth(this.value)" class="bg-transparent border-none outline-none text-brand-text font-semibold py-2 pr-4 pl-1 cursor-pointer appearance-none">
+                            <select onchange="setMonth(this.value)" class="bg-transparent border-none outline-none text-brand-text font-semibold py-1.5 md:py-2 pr-4 pl-1 cursor-pointer appearance-none w-full text-right">
                                 ${MONTHS.map(m => `<option value="${m}" class="bg-brand-panel" ${state.selectedMonth === m ? 'selected' : ''}>${m}</option>`).join('')}
                             </select>
                         </div>
@@ -883,65 +1020,74 @@
 
             if (state.activeTab === 'dashboard') {
                 content += `
-                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-accent/20 relative overflow-hidden group">
-                            <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-brand-muted text-sm font-bold uppercase">Total em Caixa</h3>
-                                <div class="bg-brand-accent/20 p-2 rounded-lg"><i data-lucide="wallet" class="text-brand-accent w-5 h-5"></i></div>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-8">
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-4 md:p-6 shadow-xl border border-brand-accent/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-2 md:mb-4">
+                                <h3 class="text-brand-muted text-xs md:text-sm font-bold uppercase whitespace-normal break-words leading-tight">Total em Caixa</h3>
+                                <div class="bg-brand-accent/20 p-1.5 md:p-2 rounded-lg shrink-0"><i data-lucide="wallet" class="text-brand-accent w-4 h-4 md:w-5 md:h-5"></i></div>
                             </div>
-                            <p class="text-2xl font-bold ${totalBoxBalance >= 0 ? 'text-brand-accent' : 'text-brand-danger'}">${formatCurrency(totalBoxBalance)}</p>
+                            <p class="text-lg md:text-2xl font-bold ${totalBoxBalance >= 0 ? 'text-brand-accent' : 'text-brand-danger'} whitespace-normal break-words leading-tight">${formatCurrency(totalBoxBalance)}</p>
                         </div>
 
-                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-muted/20 relative overflow-hidden group">
-                            <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-brand-muted text-sm font-bold uppercase">Saldo Anterior</h3>
-                                <div class="bg-brand-muted/20 p-2 rounded-lg"><i data-lucide="history" class="text-brand-muted w-5 h-5"></i></div>
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-4 md:p-6 shadow-xl border border-brand-muted/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-2 md:mb-4">
+                                <h3 class="text-brand-muted text-xs md:text-sm font-bold uppercase whitespace-normal break-words leading-tight">Saldo Anterior</h3>
+                                <div class="bg-brand-muted/20 p-1.5 md:p-2 rounded-lg shrink-0"><i data-lucide="history" class="text-brand-muted w-4 h-4 md:w-5 md:h-5"></i></div>
                             </div>
-                            <p class="text-2xl font-bold text-white">${formatCurrency(prevBalance)}</p>
+                            <p class="text-lg md:text-2xl font-bold text-white whitespace-normal break-words leading-tight">${formatCurrency(prevBalance)}</p>
                         </div>
 
-                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-success/20 relative overflow-hidden group">
-                            <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-brand-muted text-sm font-bold uppercase">Receitas (${state.selectedMonth})</h3>
-                                <div class="bg-brand-success/20 p-2 rounded-lg"><i data-lucide="trending-up" class="text-brand-success w-5 h-5"></i></div>
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-4 md:p-6 shadow-xl border border-brand-success/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-2 md:mb-4">
+                                <h3 class="text-brand-muted text-xs md:text-sm font-bold uppercase whitespace-normal break-words leading-tight">Receitas</h3>
+                                <div class="bg-brand-success/20 p-1.5 md:p-2 rounded-lg shrink-0"><i data-lucide="trending-up" class="text-brand-success w-4 h-4 md:w-5 md:h-5"></i></div>
                             </div>
-                            <p class="text-2xl font-bold text-brand-success">${formatCurrency(income)}</p>
+                            <p class="text-lg md:text-2xl font-bold text-brand-success whitespace-normal break-words leading-tight">${formatCurrency(income)}</p>
                         </div>
 
-                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-6 shadow-xl border border-brand-danger/20 relative overflow-hidden group">
-                            <div class="flex items-center justify-between mb-4">
-                                <h3 class="text-brand-muted text-sm font-bold uppercase">Despesas (${state.selectedMonth})</h3>
-                                <div class="bg-brand-danger/20 p-2 rounded-lg"><i data-lucide="trending-down" class="text-brand-danger w-5 h-5"></i></div>
+                        <div class="bg-gradient-to-br from-brand-panel to-brand-dark rounded-2xl p-4 md:p-6 shadow-xl border border-brand-danger/20 relative overflow-hidden group">
+                            <div class="flex items-center justify-between mb-2 md:mb-4">
+                                <h3 class="text-brand-muted text-xs md:text-sm font-bold uppercase whitespace-normal break-words leading-tight">Despesas</h3>
+                                <div class="bg-brand-danger/20 p-1.5 md:p-2 rounded-lg shrink-0"><i data-lucide="trending-down" class="text-brand-danger w-4 h-4 md:w-5 md:h-5"></i></div>
                             </div>
-                            <p class="text-2xl font-bold text-brand-danger">${formatCurrency(expenses)}</p>
+                            <p class="text-lg md:text-2xl font-bold text-brand-danger whitespace-normal break-words leading-tight">${formatCurrency(expenses)}</p>
                         </div>
                     </div>
 
-                    <div class="bg-brand-panel rounded-2xl p-6 shadow-xl border border-brand-muted/10">
-                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="activity" class="text-brand-accent"></i> Últimas Movimentações (${state.selectedMonth})</h3>
+                    <div class="bg-brand-panel rounded-2xl p-4 md:p-6 shadow-xl border border-brand-muted/10">
+                        <h3 class="text-base md:text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="activity" class="text-brand-accent"></i> Últimas Movimentações (${state.selectedMonth})</h3>
                         ${filteredTransactions.length === 0 ? `
                             <div class="text-center py-10 text-brand-muted bg-brand-dark/50 rounded-xl border border-dashed border-brand-muted/20">
-                                <i data-lucide="file-search" class="w-12 h-12 mx-auto mb-3 opacity-50"></i>
-                                <p>Nenhuma movimentação registrada no mês.</p>
+                                <i data-lucide="file-search" class="w-10 h-10 md:w-12 md:h-12 mx-auto mb-3 opacity-50"></i>
+                                <p class="text-sm md:text-base">Nenhuma movimentação registrada no mês.</p>
                             </div>
                         ` : `
                             <div class="space-y-3">
-                                ${filteredTransactions.slice().reverse().slice(0, 5).map(tx => `
-                                    <div class="flex justify-between items-center p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10">
-                                        <div class="flex items-center gap-4">
-                                            <div class="${tx.type === 'income' ? 'bg-brand-success/10 text-brand-success' : 'bg-brand-danger/10 text-brand-danger'} p-3 rounded-xl shadow-inner">
-                                                <i data-lucide="${tx.type === 'income' ? 'arrow-up-right' : 'arrow-down-right'}" class="w-5 h-5"></i>
+                                ${filteredTransactions.slice().reverse().slice(0, 5).map(tx => {
+                                    let displayName = tx.description;
+                                    const mRef = matchMemberToTx(tx);
+                                    if (mRef && mRef.rank) {
+                                        displayName = `${mRef.rank} ${mRef.name}`;
+                                    } else if (mRef) {
+                                        displayName = mRef.name;
+                                    }
+                                    
+                                    return `
+                                    <div class="flex justify-between items-center p-3 md:p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10">
+                                        <div class="flex items-center gap-3 md:gap-4 overflow-hidden">
+                                            <div class="${tx.type === 'income' ? 'bg-brand-success/10 text-brand-success' : 'bg-brand-danger/10 text-brand-danger'} p-2 md:p-3 rounded-xl shadow-inner shrink-0">
+                                                <i data-lucide="${tx.type === 'income' ? 'arrow-up-right' : 'arrow-down-right'}" class="w-4 h-4 md:w-5 md:h-5"></i>
                                             </div>
-                                            <div>
-                                                <p class="font-bold text-white text-sm md:text-base">${tx.description}</p>
-                                                <p class="text-xs text-brand-muted">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
+                                            <div class="min-w-0">
+                                                <p class="font-bold text-white text-xs md:text-base whitespace-normal break-words leading-tight">${displayName}</p>
+                                                <p class="text-[10px] md:text-xs text-brand-muted mt-1">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
                                             </div>
                                         </div>
-                                        <p class="font-bold ${tx.type === 'income' ? 'text-brand-success' : 'text-brand-danger'}">
+                                        <p class="font-bold text-sm md:text-base shrink-0 ml-2 ${tx.type === 'income' ? 'text-brand-success' : 'text-brand-danger'}">
                                             ${tx.type === 'income' ? '+' : '-'}${formatCurrency(tx.amount)}
                                         </p>
                                     </div>
-                                `).join('')}
+                                `}).join('')}
                             </div>
                         `}
                     </div>
@@ -949,11 +1095,63 @@
             } 
             
             else if (state.activeTab === 'members') {
+                const rankWeights = { 'CEL': 1, 'TC': 2, 'MAJ': 3, 'CAP': 4, 'TEN': 5, 'ST': 6, '1º SGT': 7, '2º SGT': 8, '3º SGT': 9, 'SGT': 9, 'CB': 10, 'SD': 11, 'CIVIL': 12 };
+                const getRankWeight = (m) => rankWeights[m.rank] || 99;
+
+                let displayedMembers = [...state.members];
+
+                if (state.memberSearchQuery) {
+                    const q = state.memberSearchQuery.toLowerCase();
+                    displayedMembers = displayedMembers.filter(m => 
+                        String(m.name || '').toLowerCase().includes(q) || 
+                        String(m.matricula || '').toLowerCase().includes(q) ||
+                        (m.rank && m.rank.toLowerCase().includes(q))
+                    );
+                }
+
+                if (state.memberPaymentFilter === 'paid') {
+                    displayedMembers = displayedMembers.filter(m => {
+                        const hasTx = state.transactions.some(t => t.type === 'income' && t.month === state.selectedMonth && (t.memberId === m.id || matchMemberToTx(t)?.id === m.id));
+                        return (m.payments || {})[state.selectedMonth] || hasTx;
+                    });
+                } else if (state.memberPaymentFilter === 'pending') {
+                    displayedMembers = displayedMembers.filter(m => {
+                        const hasTx = state.transactions.some(t => t.type === 'income' && t.month === state.selectedMonth && (t.memberId === m.id || matchMemberToTx(t)?.id === m.id));
+                        return !((m.payments || {})[state.selectedMonth] || hasTx);
+                    });
+                }
+
+                displayedMembers.sort((a, b) => {
+                    const weightA = getRankWeight(a);
+                    const weightB = getRankWeight(b);
+                    if (weightA !== weightB) return weightA - weightB;
+                    
+                    const matA = parseInt(String(a.matricula).replace(/\D/g, '')) || 999999999;
+                    const matB = parseInt(String(b.matricula).replace(/\D/g, '')) || 999999999;
+                    return matA - matB;
+                });
+
                 content += `
                     ${state.isAdmin ? `
-                    <div class="bg-brand-panel p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6">
-                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="user-plus" class="text-brand-accent"></i> Alistar Policial</h3>
-                        <form onsubmit="handleAddMember(event)" class="flex flex-col md:flex-row gap-4">
+                    <div class="bg-brand-panel p-4 md:p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6 w-full overflow-hidden">
+                        <h3 class="text-base md:text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="user-plus" class="text-brand-accent"></i> Alistar Policial</h3>
+                        <form onsubmit="handleAddMember(event)" class="flex flex-col lg:flex-row gap-3">
+                            <select id="newMemberRank" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white">
+                                <option value="">Graduação</option>
+                                <option value="CEL">Coronel</option>
+                                <option value="TC">Tenente Coronel</option>
+                                <option value="MAJ">Major</option>
+                                <option value="CAP">Capitão</option>
+                                <option value="TEN">Tenente</option>
+                                <option value="ST">Subtenente</option>
+                                <option value="1º SGT">1º Sargento</option>
+                                <option value="2º SGT">2º Sargento</option>
+                                <option value="3º SGT">3º Sargento</option>
+                                <option value="SGT">Sargento (Geral)</option>
+                                <option value="CB">Cabo</option>
+                                <option value="SD">Soldado</option>
+                                <option value="CIVIL">Civil / Outro</option>
+                            </select>
                             <input type="text" id="newMemberName" placeholder="Nome Completo" class="flex-1 bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
                             <input type="text" id="newMemberMatricula" placeholder="Matrícula" class="flex-1 bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
                             <button type="submit" class="bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-6 rounded-xl transition-all shadow-lg flex items-center justify-center gap-2">
@@ -962,19 +1160,34 @@
                         </form>
                     </div>` : ''}
                     
-                    <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-muted/10 overflow-hidden">
-                        <div class="p-4 bg-brand-dark/50 border-b border-brand-muted/10 flex justify-between items-center flex-wrap gap-4">
-                            <h3 class="text-lg font-bold flex items-center"><i data-lucide="users" class="inline text-brand-accent w-5 h-5 mr-2"></i> Tropa Registrada</h3>
-                            <button onclick="toggleMembersViewMode()" class="bg-brand-panel border border-brand-muted/20 px-4 py-2 rounded-lg text-sm font-semibold hover:bg-brand-dark transition-colors flex items-center gap-2 text-white">
-                                <i data-lucide="sliders-horizontal" class="w-4 h-4 text-brand-accent"></i> 
-                                ${state.membersViewMode === 'panorama' ? 'Exibir Apenas o Mês Selecionado' : 'Exibir Panorama (Todos os Meses)'}
-                            </button>
+                    <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-muted/10 overflow-hidden w-full">
+                        <div class="p-4 bg-brand-dark/50 border-b border-brand-muted/10 flex flex-col gap-4">
+                            <div class="flex justify-between items-center flex-wrap gap-2">
+                                <h3 class="text-base md:text-lg font-bold flex items-center"><i data-lucide="users" class="inline text-brand-accent w-5 h-5 mr-2"></i> Efetivo (${displayedMembers.length})</h3>
+                                <button onclick="toggleMembersViewMode()" class="bg-brand-panel border border-brand-muted/20 px-3 py-2 rounded-lg text-xs md:text-sm font-semibold hover:bg-brand-dark transition-colors flex items-center gap-2 text-white">
+                                    <i data-lucide="sliders-horizontal" class="w-4 h-4 text-brand-accent"></i> 
+                                    ${state.membersViewMode === 'panorama' ? 'Ocultar outros meses' : 'Exibir panorama completo'}
+                                </button>
+                            </div>
+
+                            <div class="flex flex-col md:flex-row gap-3">
+                                <div class="flex-1 relative">
+                                    <i data-lucide="search" class="absolute left-3 top-3 text-brand-muted w-4 h-4 md:w-5 md:h-5"></i>
+                                    <input type="text" oninput="setMemberSearch(this.value)" value="${state.memberSearchQuery}" placeholder="Buscar Nome ou Matrícula..." class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:border-brand-accent rounded-xl pl-10 pr-4 py-2 md:py-2.5 text-sm md:text-base text-white placeholder-brand-muted">
+                                </div>
+                                <div class="flex gap-2 overflow-x-auto pb-1 md:pb-0 hide-scrollbar">
+                                    <button onclick="setMemberFilter('all')" class="px-4 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all border whitespace-nowrap ${state.memberPaymentFilter === 'all' ? 'bg-brand-accent/20 text-brand-accent border-brand-accent/30' : 'bg-brand-dark text-brand-muted border-brand-muted/20 hover:bg-brand-muted/10'}">Todos</button>
+                                    <button onclick="setMemberFilter('paid')" class="px-4 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all border whitespace-nowrap ${state.memberPaymentFilter === 'paid' ? 'bg-brand-success/20 text-brand-success border-brand-success/30' : 'bg-brand-dark text-brand-muted border-brand-muted/20 hover:bg-brand-muted/10'}">Quites</button>
+                                    <button onclick="setMemberFilter('pending')" class="px-4 py-2 md:py-2.5 rounded-xl text-xs md:text-sm font-bold transition-all border whitespace-nowrap ${state.memberPaymentFilter === 'pending' ? 'bg-brand-danger/20 text-brand-danger border-brand-danger/30' : 'bg-brand-dark text-brand-muted border-brand-muted/20 hover:bg-brand-muted/10'}">Pendentes (${state.selectedMonth})</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="overflow-x-auto">
+                        
+                        <div class="overflow-x-auto w-full">
                             <table class="w-full text-left border-collapse">
                                 <thead>
-                                    <tr class="bg-brand-dark border-b border-brand-muted/10 text-sm">
-                                        <th class="p-4 font-semibold text-brand-muted sticky left-0 bg-brand-dark z-20 border-r border-brand-muted/5 min-w-[200px] shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)]">Nome / Matrícula</th>
+                                    <tr class="bg-brand-dark border-b border-brand-muted/10 text-xs md:text-sm">
+                                        <th class="p-4 font-semibold text-brand-muted sticky left-0 bg-brand-dark z-20 border-r border-brand-muted/5 min-w-[200px] sm:min-w-[250px] shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)]">Policial / Matrícula</th>
                                         ${MONTHS.map(m => {
                                             const isSelected = m === state.selectedMonth;
                                             const isVisible = state.membersViewMode === 'panorama' || isSelected;
@@ -985,15 +1198,19 @@
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-brand-muted/10">
-                                    ${state.members.length === 0 ? `<tr><td colspan="14" class="p-8 text-center text-brand-muted">Nenhum contribuinte registrado no banco de dados.</td></tr>` : 
-                                    state.members.map(member => `
+                                    ${displayedMembers.length === 0 ? `<tr><td colspan="15" class="p-8 text-center text-brand-muted">Nenhum policial encontrado.</td></tr>` : 
+                                    displayedMembers.map(member => `
                                         <tr class="hover:bg-brand-dark/50 transition-colors">
-                                            <td class="p-4 sticky left-0 bg-brand-panel z-10 border-r border-brand-muted/5 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)]">
-                                                <p class="font-bold text-white whitespace-nowrap">${member.name}</p>
-                                                <p class="text-xs text-brand-muted font-mono mt-1">${member.matricula}</p>
+                                            <td class="p-4 sticky left-0 bg-brand-panel z-10 border-r border-brand-muted/5 shadow-[4px_0_8px_-2px_rgba(0,0,0,0.3)] min-w-[200px] sm:min-w-[250px]">
+                                                <div class="flex flex-col gap-1 items-start w-full">
+                                                    ${member.rank ? `<span class="bg-brand-dark text-brand-muted text-[10px] font-bold px-2 py-0.5 rounded border border-brand-muted/20 shadow-sm uppercase tracking-wider">${member.rank}</span>` : ''}
+                                                    <p class="font-bold text-white text-sm md:text-base whitespace-normal break-words leading-tight w-full">${member.name}</p>
+                                                    <p class="text-[10px] md:text-xs text-brand-muted font-mono">${member.matricula}</p>
+                                                </div>
                                             </td>
                                             ${MONTHS.map(m => {
-                                                const isPaid = (member.payments || {})[m];
+                                                const hasTx = state.transactions.some(t => t.type === 'income' && t.month === m && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
+                                                const isPaid = (member.payments || {})[m] || hasTx;
                                                 const isSelected = m === state.selectedMonth;
                                                 const isVisible = state.membersViewMode === 'panorama' || isSelected;
                                                 return `
@@ -1005,12 +1222,16 @@
                                                     >
                                                         <i data-lucide="${isPaid ? 'check' : 'x'}" class="w-4 h-4"></i>
                                                     </button>
+                                                    ${isPaid && state.isAdmin ? `<button onclick="openReceiptFromMember('${member.id}', '${m}')" class="text-[10px] uppercase font-bold tracking-wider text-brand-accent mt-2 flex items-center justify-center gap-1 mx-auto hover:bg-brand-accent/10 px-2 py-1 rounded transition-colors"><i data-lucide="receipt" class="w-3 h-3"></i> Recibo</button>` : ''}
                                                 </td>`
                                             }).join('')}
                                             ${state.isAdmin ? `
-                                            <td class="p-4 text-center">
-                                                <button onclick="handleDeleteMember('${member.id}')" class="text-brand-danger hover:text-red-400 p-2 rounded-lg hover:bg-brand-danger/10 transition-colors">
-                                                    <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                            <td class="p-4 text-center whitespace-nowrap">
+                                                <button onclick="startEditMember('${member.id}')" title="Editar Policial" class="text-brand-accent hover:text-blue-400 p-2 rounded-lg hover:bg-brand-accent/10 transition-colors mr-1 md:mr-2">
+                                                    <i data-lucide="edit-3" class="w-4 h-4 md:w-5 md:h-5"></i>
+                                                </button>
+                                                <button onclick="handleDeleteMember('${member.id}')" title="Excluir" class="text-brand-danger hover:text-red-400 p-2 rounded-lg hover:bg-brand-danger/10 transition-colors">
+                                                    <i data-lucide="trash-2" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                 </button>
                                             </td>` : ''}
                                         </tr>
@@ -1019,96 +1240,131 @@
                             </table>
                         </div>
                     </div>
+
+                    ${state.editingMemberId ? `
+                    <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[9999] flex items-center justify-center p-4">
+                        <div class="bg-brand-panel rounded-2xl p-6 w-full max-w-md shadow-2xl border border-brand-muted/20 animate-fade-in">
+                            <h3 class="text-xl font-bold mb-4 flex items-center gap-2"><i data-lucide="edit" class="text-brand-accent"></i> Editar Policial</h3>
+                            <form onsubmit="saveEditMember(event)" class="space-y-4">
+                                <select id="editRank" onchange="state.editMemberData.rank = this.value" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:border-brand-accent rounded-xl px-4 py-3 text-white">
+                                    <option value="">Nenhuma Graduação</option>
+                                    <option value="CEL" ${state.editMemberData.rank==='CEL'?'selected':''}>Coronel</option>
+                                    <option value="TC" ${state.editMemberData.rank==='TC'?'selected':''}>Tenente Coronel</option>
+                                    <option value="MAJ" ${state.editMemberData.rank==='MAJ'?'selected':''}>Major</option>
+                                    <option value="CAP" ${state.editMemberData.rank==='CAP'?'selected':''}>Capitão</option>
+                                    <option value="TEN" ${state.editMemberData.rank==='TEN'?'selected':''}>Tenente</option>
+                                    <option value="ST" ${state.editMemberData.rank==='ST'?'selected':''}>Subtenente</option>
+                                    <option value="1º SGT" ${state.editMemberData.rank==='1º SGT'?'selected':''}>1º Sargento</option>
+                                    <option value="2º SGT" ${state.editMemberData.rank==='2º SGT'?'selected':''}>2º Sargento</option>
+                                    <option value="3º SGT" ${state.editMemberData.rank==='3º SGT'?'selected':''}>3º Sargento</option>
+                                    <option value="SGT" ${state.editMemberData.rank==='SGT'?'selected':''}>Sargento (Geral)</option>
+                                    <option value="CB" ${state.editMemberData.rank==='CB'?'selected':''}>Cabo</option>
+                                    <option value="SD" ${state.editMemberData.rank==='SD'?'selected':''}>Soldado</option>
+                                    <option value="CIVIL" ${state.editMemberData.rank==='CIVIL'?'selected':''}>Civil / Outro</option>
+                                </select>
+                                <input type="text" value="${state.editMemberData.name}" onchange="state.editMemberData.name = this.value" placeholder="Nome Completo" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:border-brand-accent rounded-xl px-4 py-3 text-white" required/>
+                                <input type="text" value="${state.editMemberData.matricula}" onchange="state.editMemberData.matricula = this.value" placeholder="Matrícula" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:border-brand-accent rounded-xl px-4 py-3 text-white" required/>
+                                <div class="flex gap-3 pt-2">
+                                    <button type="button" onclick="cancelEditMember()" class="flex-1 px-4 py-3 rounded-xl font-bold text-brand-muted bg-brand-dark hover:bg-brand-muted/10 transition-colors border border-transparent">Cancelar</button>
+                                    <button type="submit" class="flex-1 px-4 py-3 rounded-xl font-bold text-white bg-brand-accent hover:bg-blue-600 transition-colors shadow-lg">Salvar Edição</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>` : ''}
                 `;
             } 
             
             else if (state.activeTab === 'transactions') {
                 content += `
                     ${state.isAdmin ? `
-                    <div class="bg-brand-panel p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6">
-                        <h3 class="text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="plus-square" class="text-brand-accent"></i> Registrar Fluxo (${state.selectedMonth})</h3>
+                    <div class="bg-brand-panel p-4 md:p-6 rounded-2xl shadow-xl border border-brand-muted/10 mb-6">
+                        <h3 class="text-base md:text-lg font-bold mb-4 flex items-center gap-2"><i data-lucide="plus-square" class="text-brand-accent"></i> Registrar Fluxo (${state.selectedMonth})</h3>
                         <form onsubmit="handleAddTransaction(event)" class="space-y-4">
-                            <div class="flex gap-4">
-                                <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-success has-[:checked]:bg-brand-success/10 has-[:checked]:text-brand-success border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
+                            <div class="flex gap-2 md:gap-4">
+                                <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-2.5 md:p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-success has-[:checked]:bg-brand-success/10 has-[:checked]:text-brand-success border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark text-sm md:text-base">
                                     <input type="radio" name="transType" value="income" onchange="toggleExpenseFields()" checked class="hidden"/>
-                                    <i data-lucide="plus" class="w-5 h-5"></i> Receita
+                                    <i data-lucide="plus" class="w-4 h-4 md:w-5 md:h-5"></i> Receita
                                 </label>
-                                <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-danger has-[:checked]:bg-brand-danger/10 has-[:checked]:text-brand-danger border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark">
+                                <label class="flex-1 cursor-pointer flex items-center justify-center gap-2 p-2.5 md:p-3 rounded-xl border-2 transition-all has-[:checked]:border-brand-danger has-[:checked]:bg-brand-danger/10 has-[:checked]:text-brand-danger border-brand-dark text-brand-muted hover:border-brand-muted/30 bg-brand-dark text-sm md:text-base">
                                     <input type="radio" name="transType" value="expense" onchange="toggleExpenseFields()" class="hidden"/>
-                                    <i data-lucide="minus" class="w-5 h-5"></i> Despesa
+                                    <i data-lucide="minus" class="w-4 h-4 md:w-5 md:h-5"></i> Despesa
                                 </label>
                             </div>
-                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
                                 <input type="text" id="newTransDesc" placeholder="Descrição" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
                                 <input type="number" id="newTransAmount" step="0.01" placeholder="Valor (R$)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white placeholder-brand-muted" required/>
                                 <input type="datetime-local" id="newTransDate" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-brand-muted" title="Data e Hora (opcional)"/>
                             </div>
 
                             <div id="expenseExtraFields" class="hidden space-y-4 pt-4 border-t border-brand-muted/20">
-                                <h4 class="text-sm font-bold text-brand-warning flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> Detalhes da Compra (Transparência)</h4>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <h4 class="text-xs md:text-sm font-bold text-brand-warning flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> Detalhes da Compra (Transparência)</h4>
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
                                     <input type="text" id="newTransLocation" placeholder="Local da Compra (Ex: Supermercado X)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                     <input type="url" id="newTransLink" placeholder="Link da Compra (se internet)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                     <input type="text" id="newTransBuyerName" placeholder="Nome de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                     <input type="text" id="newTransBuyerMat" placeholder="Matrícula de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                 </div>
                                 <div>
-                                    <label class="block text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal (Imagem ou PDF)</label>
-                                    <input type="file" id="newTransPhoto" accept="image/*,application/pdf" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
+                                    <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal (Imagem ou PDF)</label>
+                                    <input type="file" id="newTransPhoto" accept="image/*,application/pdf" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs md:file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
                                 </div>
                             </div>
 
-                            <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-2">
+                            <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 md:py-4 px-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-2">
                                 <i data-lucide="save" class="w-5 h-5"></i> Gravar Registro
                             </button>
                         </form>
                     </div>` : ''}
 
-                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 md:gap-6">
                         <!-- Tabela de Receitas -->
                         <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-success/20 overflow-hidden flex flex-col">
-                            <div class="p-5 bg-brand-success/10 border-b border-brand-success/20">
-                                <h3 class="text-lg font-bold flex items-center gap-2 text-brand-success"><i data-lucide="trending-up" class="w-5 h-5"></i> Entradas (Receitas)</h3>
+                            <div class="p-4 md:p-5 bg-brand-success/10 border-b border-brand-success/20">
+                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-brand-success"><i data-lucide="trending-up" class="w-4 h-4 md:w-5 md:h-5"></i> Entradas (Receitas)</h3>
                             </div>
                             <div class="p-0 overflow-x-auto flex-1">
                                 <table class="w-full text-left border-collapse">
                                     <thead>
-                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm bg-brand-dark/50">
-                                            <th class="py-3 px-4 font-medium">Data</th>
-                                            <th class="py-3 px-4 font-medium">Descrição</th>
-                                            <th class="py-3 px-4 font-medium text-right">Valor</th>
-                                            ${state.isAdmin ? '<th class="py-3 px-4 font-medium text-center">Ações</th>' : ''}
+                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-xs md:text-sm bg-brand-dark/50">
+                                            <th class="py-3 px-3 md:px-4 font-medium">Data</th>
+                                            <th class="py-3 px-3 md:px-4 font-medium">Descrição</th>
+                                            <th class="py-3 px-3 md:px-4 font-medium text-right">Valor</th>
+                                            ${state.isAdmin ? '<th class="py-3 px-3 md:px-4 font-medium text-center">Ações</th>' : ''}
                                         </tr>
                                     </thead>
                                     <tbody>
                                         ${filteredTransactions.filter(t => t.type === 'income').length === 0 ? `
-                                            <tr>
-                                                <td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">
-                                                    Nenhuma receita neste mês.
-                                                </td>
-                                            </tr>
-                                        ` : filteredTransactions.filter(t => t.type === 'income').slice().reverse().map(tx => `
+                                            <tr><td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">Nenhuma receita neste mês.</td></tr>
+                                        ` : filteredTransactions.filter(t => t.type === 'income').slice().reverse().map(tx => {
+                                            let displayName = tx.description;
+                                            const mRef = matchMemberToTx(tx);
+                                            if (mRef && mRef.rank) {
+                                                displayName = `<span class="block text-[10px] text-brand-muted font-bold uppercase tracking-wider mb-0.5">${mRef.rank}</span>${mRef.name}`;
+                                            } else if (mRef) {
+                                                displayName = mRef.name;
+                                            }
+                                            return `
                                             <tr class="border-b border-brand-muted/5 hover:bg-brand-dark/30 transition-colors group">
-                                                <td class="py-4 px-4 text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
-                                                <td class="py-4 px-4">
-                                                    <p class="font-bold text-white">${tx.description}</p>
+                                                <td class="py-3 px-3 md:px-4 text-xs md:text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                                                <td class="py-3 px-3 md:px-4">
+                                                    <p class="font-bold text-white text-xs md:text-base whitespace-normal break-words leading-tight">${displayName}</p>
                                                 </td>
-                                                <td class="py-4 px-4 text-right font-bold text-brand-success whitespace-nowrap">
+                                                <td class="py-3 px-3 md:px-4 text-right font-bold text-brand-success text-xs md:text-base whitespace-nowrap">
                                                     +${formatCurrency(tx.amount)}
                                                 </td>
                                                 ${state.isAdmin ? `
-                                                <td class="py-4 px-4">
-                                                    <div class="flex items-center justify-center gap-2">
-                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
-                                                            <i data-lucide="receipt" class="w-5 h-5"></i>
+                                                <td class="py-3 px-3 md:px-4">
+                                                    <div class="flex items-center justify-center gap-1 md:gap-2">
+                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                            <i data-lucide="receipt" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
-                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-2 rounded-lg transition-colors border border-transparent hover:border-brand-danger/30">
-                                                            <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                            <i data-lucide="trash-2" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
                                                     </div>
                                                 </td>` : ''}
                                             </tr>
-                                        `).join('')}
+                                        `}).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -1116,50 +1372,46 @@
 
                         <!-- Tabela de Despesas -->
                         <div class="bg-brand-panel rounded-2xl shadow-xl border border-brand-danger/20 overflow-hidden flex flex-col">
-                            <div class="p-5 bg-brand-danger/10 border-b border-brand-danger/20">
-                                <h3 class="text-lg font-bold flex items-center gap-2 text-brand-danger"><i data-lucide="trending-down" class="w-5 h-5"></i> Saídas (Despesas)</h3>
+                            <div class="p-4 md:p-5 bg-brand-danger/10 border-b border-brand-danger/20">
+                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-brand-danger"><i data-lucide="trending-down" class="w-4 h-4 md:w-5 md:h-5"></i> Saídas (Despesas)</h3>
                             </div>
                             <div class="p-0 overflow-x-auto flex-1">
                                 <table class="w-full text-left border-collapse">
                                     <thead>
-                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-sm bg-brand-dark/50">
-                                            <th class="py-3 px-4 font-medium">Data</th>
-                                            <th class="py-3 px-4 font-medium">Descrição</th>
-                                            <th class="py-3 px-4 font-medium text-right">Valor</th>
-                                            ${state.isAdmin ? '<th class="py-3 px-4 font-medium text-center">Ações</th>' : ''}
+                                        <tr class="text-brand-muted border-b border-brand-muted/10 text-xs md:text-sm bg-brand-dark/50">
+                                            <th class="py-3 px-3 md:px-4 font-medium">Data</th>
+                                            <th class="py-3 px-3 md:px-4 font-medium">Descrição</th>
+                                            <th class="py-3 px-3 md:px-4 font-medium text-right">Valor</th>
+                                            ${state.isAdmin ? '<th class="py-3 px-3 md:px-4 font-medium text-center">Ações</th>' : ''}
                                         </tr>
                                     </thead>
                                     <tbody>
                                         ${filteredTransactions.filter(t => t.type === 'expense').length === 0 ? `
-                                            <tr>
-                                                <td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">
-                                                    Nenhuma despesa neste mês.
-                                                </td>
-                                            </tr>
+                                            <tr><td colspan="${state.isAdmin ? 4 : 3}" class="py-10 text-center text-brand-muted">Nenhuma despesa neste mês.</td></tr>
                                         ` : filteredTransactions.filter(t => t.type === 'expense').slice().reverse().map(tx => `
                                             <tr class="border-b border-brand-muted/5 hover:bg-brand-dark/30 transition-colors group">
-                                                <td class="py-4 px-4 text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
-                                                <td class="py-4 px-4">
+                                                <td class="py-3 px-3 md:px-4 text-xs md:text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                                                <td class="py-3 px-3 md:px-4">
                                                     <div class="flex flex-col items-start gap-1">
-                                                        <p class="font-bold text-white">${tx.description}</p>
+                                                        <p class="font-bold text-white text-xs md:text-base whitespace-normal break-words leading-tight">${tx.description}</p>
                                                         ${(tx.purchaseLocation || tx.purchaseLink || tx.buyerName || tx.receiptImage) ? `
-                                                            <button onclick="openDetailsModal('${tx.id}')" title="Ver Detalhes da Compra" class="bg-brand-warning/10 text-brand-warning hover:bg-brand-warning/20 px-2 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors border border-brand-warning/20 hover:border-brand-warning/40 mt-1">
+                                                            <button onclick="openDetailsModal('${tx.id}')" title="Ver Detalhes da Compra" class="bg-brand-warning/10 text-brand-warning hover:bg-brand-warning/20 px-2 py-1 rounded-md text-[10px] md:text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors border border-brand-warning/20 hover:border-brand-warning/40 mt-1">
                                                                 <i data-lucide="search" class="w-3 h-3"></i> Transparência
                                                             </button>
                                                         ` : ''}
                                                     </div>
                                                 </td>
-                                                <td class="py-4 px-4 text-right font-bold text-brand-danger whitespace-nowrap">
+                                                <td class="py-3 px-3 md:px-4 text-right font-bold text-brand-danger text-xs md:text-base whitespace-nowrap">
                                                     -${formatCurrency(tx.amount)}
                                                 </td>
                                                 ${state.isAdmin ? `
-                                                <td class="py-4 px-4">
-                                                    <div class="flex items-center justify-center gap-2">
-                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
-                                                            <i data-lucide="receipt" class="w-5 h-5"></i>
+                                                <td class="py-3 px-3 md:px-4">
+                                                    <div class="flex items-center justify-center gap-1 md:gap-2">
+                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                            <i data-lucide="receipt" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
-                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-2 rounded-lg transition-colors border border-transparent hover:border-brand-danger/30">
-                                                            <i data-lucide="trash-2" class="w-5 h-5"></i>
+                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                            <i data-lucide="trash-2" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
                                                     </div>
                                                 </td>` : ''}
@@ -1174,46 +1426,75 @@
             }
 
             else if (state.activeTab === 'audit') {
+                const txWithReceipts = state.transactions.filter(t => t.type === 'expense' && t.receiptImage).sort((a,b) => b.createdAt - a.createdAt);
+
                 content += `
-                    <div class="bg-brand-panel rounded-2xl p-6 shadow-xl border border-brand-muted/10 h-full">
-                        <div class="flex items-center justify-between mb-6">
-                            <h3 class="text-lg font-bold flex items-center gap-2 text-white"><i data-lucide="history" class="text-brand-accent"></i> Registro de Atividades</h3>
-                            <span class="text-xs bg-brand-dark text-brand-muted px-3 py-1 rounded-full border border-brand-muted/20">Auditoria em Tempo Real</span>
-                        </div>
-                        
-                        ${state.logs.length === 0 ? `
-                            <div class="text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
-                                <i data-lucide="shield-check" class="w-12 h-12 mx-auto mb-3 opacity-50 text-[#EAB308]"></i>
-                                <p>Nenhuma atividade registrada no sistema recentemente.</p>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 h-full">
+                        <div class="bg-brand-panel rounded-2xl p-4 md:p-6 shadow-xl border border-brand-muted/10 h-[70vh] flex flex-col">
+                            <div class="flex items-center justify-between mb-4 md:mb-6 shrink-0">
+                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-white"><i data-lucide="history" class="text-brand-accent"></i> Registro de Atividades</h3>
                             </div>
-                        ` : `
-                            <div class="space-y-4">
-                                ${state.logs.slice(0, 50).map(log => `
-                                    <div class="flex flex-col sm:flex-row sm:items-center justify-between p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10 hover:border-brand-muted/30 transition-all">
-                                        <div class="flex items-center gap-4 mb-2 sm:mb-0">
-                                            <div class="bg-brand-panel p-2 rounded-lg border border-brand-muted/20">
-                                                <i data-lucide="terminal" class="text-[#EAB308] w-5 h-5"></i>
+                            
+                            <div class="overflow-y-auto flex-1 pr-2 space-y-3">
+                                ${state.logs.length === 0 ? `
+                                    <div class="text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
+                                        <i data-lucide="shield-check" class="w-10 h-10 md:w-12 md:h-12 mx-auto mb-3 opacity-50 text-[#EAB308]"></i>
+                                        <p class="text-sm">Nenhuma atividade recente.</p>
+                                    </div>
+                                ` : state.logs.slice(0, 50).map(log => `
+                                    <div class="flex flex-col sm:flex-row sm:items-center justify-between p-3 md:p-4 bg-brand-dark/50 rounded-xl border border-brand-muted/10 hover:border-brand-muted/30 transition-all">
+                                        <div class="flex items-center gap-3 mb-2 sm:mb-0">
+                                            <div class="bg-brand-panel p-2 rounded-lg border border-brand-muted/20 shrink-0">
+                                                <i data-lucide="terminal" class="text-[#EAB308] w-4 h-4 md:w-5 md:h-5"></i>
                                             </div>
-                                            <p class="text-white text-sm md:text-base">${log.action}</p>
+                                            <p class="text-white text-xs md:text-sm whitespace-normal break-words">${log.action}</p>
                                         </div>
-                                        <div class="flex items-center gap-2 text-brand-muted text-xs bg-brand-panel px-3 py-1.5 rounded-lg border border-brand-muted/10 shrink-0">
-                                            <i data-lucide="clock" class="w-3.5 h-3.5"></i>
+                                        <div class="flex items-center gap-2 text-brand-muted text-[10px] md:text-xs bg-brand-panel px-2 md:px-3 py-1.5 rounded-lg border border-brand-muted/10 shrink-0">
+                                            <i data-lucide="clock" class="w-3 h-3 md:w-3.5 md:h-3.5"></i>
                                             ${log.date}
                                         </div>
                                     </div>
                                 `).join('')}
                             </div>
-                        `}
+                        </div>
+
+                        <div class="bg-brand-panel rounded-2xl p-4 md:p-6 shadow-xl border border-brand-warning/20 h-[70vh] flex flex-col">
+                            <div class="flex items-center justify-between mb-4 md:mb-6 shrink-0">
+                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-brand-warning"><i data-lucide="image" class="text-brand-warning"></i> Mural de Notas Fiscais</h3>
+                            </div>
+                            
+                            <div class="overflow-y-auto flex-1 pr-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                ${txWithReceipts.length === 0 ? `
+                                    <div class="col-span-full text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
+                                        <i data-lucide="receipt" class="w-10 h-10 md:w-12 md:h-12 mx-auto mb-3 opacity-50 text-brand-warning"></i>
+                                        <p class="text-sm">Nenhuma nota fiscal ou comprovante anexado nas despesas ainda.</p>
+                                    </div>
+                                ` : txWithReceipts.map(tx => `
+                                    <div class="bg-brand-dark rounded-xl border border-brand-muted/20 overflow-hidden flex flex-col group cursor-pointer hover:border-brand-warning/40 transition-all" onclick="openDetailsModal('${tx.id}')">
+                                        <div class="h-32 bg-white flex items-center justify-center overflow-hidden">
+                                            ${tx.receiptImage.startsWith('data:application/pdf') ? 
+                                                '<i data-lucide="file-text" class="w-16 h-16 text-brand-danger opacity-80"></i>' : 
+                                                `<img src="${tx.receiptImage}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />`
+                                            }
+                                        </div>
+                                        <div class="p-3">
+                                            <p class="text-xs text-brand-muted mb-1">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
+                                            <p class="font-bold text-white text-sm line-clamp-2 leading-tight">${tx.description}</p>
+                                            <p class="font-bold text-brand-danger text-sm mt-2">${formatCurrency(tx.amount)}</p>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
                     </div>
                 `;
             }
 
             content += `</main>`;
 
-            // Modal de Login
             if (state.showLoginModal) {
                 content += `
-                <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                <div class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[999] flex items-center justify-center p-4">
                     <div class="bg-brand-panel rounded-2xl p-6 md:p-8 w-full max-w-md shadow-2xl border border-brand-muted/20">
                         <div class="flex items-center justify-center w-16 h-16 bg-brand-dark text-brand-accent rounded-full mx-auto mb-4 border border-brand-accent/30 shadow-[0_0_15px_rgba(59,130,246,0.3)]">
                             <i data-lucide="${state.isResetting ? 'mail' : 'lock'}" class="w-8 h-8"></i>
@@ -1264,52 +1545,52 @@
                 }
 
                 content += `
-                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[999] flex items-center justify-center p-4 overflow-y-auto">
                     <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
                         <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
-                            <h3 class="font-bold text-lg flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="w-5 h-5"></i> Detalhes da Despesa</h3>
+                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="w-5 h-5"></i> Detalhes da Despesa</h3>
                             <button onclick="closeDetailsModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
-                        <div class="p-6 overflow-y-auto flex-grow space-y-4">
+                        <div class="p-4 md:p-6 overflow-y-auto flex-grow space-y-4">
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                <p class="text-sm text-brand-muted mb-1">Descrição</p>
-                                <p class="font-bold text-white text-lg">${tx.description}</p>
+                                <p class="text-xs md:text-sm text-brand-muted mb-1">Descrição</p>
+                                <p class="font-bold text-white text-base md:text-lg whitespace-normal break-words">${tx.description}</p>
                             </div>
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                    <p class="text-sm text-brand-muted mb-1">Valor</p>
-                                    <p class="font-bold text-brand-danger">${formatCurrency(tx.amount)}</p>
+                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Valor</p>
+                                    <p class="font-bold text-brand-danger text-sm md:text-base">${formatCurrency(tx.amount)}</p>
                                 </div>
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                    <p class="text-sm text-brand-muted mb-1">Data / Hora</p>
-                                    <p class="font-bold text-white">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')} às ${txTime}</p>
+                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Data / Hora</p>
+                                    <p class="font-bold text-white text-sm md:text-base">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')} às ${txTime}</p>
                                 </div>
                             </div>
                             
                             ${tx.purchaseLocation || tx.purchaseLink || tx.buyerName ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10 space-y-3">
-                                <h4 class="font-bold text-brand-warning text-sm uppercase tracking-wider mb-2 border-b border-brand-muted/10 pb-2">Informações da Compra</h4>
+                                <h4 class="font-bold text-brand-warning text-xs md:text-sm uppercase tracking-wider mb-2 border-b border-brand-muted/10 pb-2">Informações da Compra</h4>
                                 
                                 ${tx.purchaseLocation ? `
                                 <div>
-                                    <p class="text-xs text-brand-muted">Local / Estabelecimento</p>
-                                    <p class="text-sm text-white font-medium">${tx.purchaseLocation}</p>
+                                    <p class="text-[10px] md:text-xs text-brand-muted">Local / Estabelecimento</p>
+                                    <p class="text-xs md:text-sm text-white font-medium whitespace-normal break-words">${tx.purchaseLocation}</p>
                                 </div>` : ''}
                                 
                                 ${tx.purchaseLink ? `
                                 <div>
-                                    <p class="text-xs text-brand-muted">Link de Compra</p>
-                                    <a href="${tx.purchaseLink.startsWith('http') ? tx.purchaseLink : 'https://'+tx.purchaseLink}" target="_blank" class="text-sm text-brand-accent hover:underline flex items-center gap-1">
+                                    <p class="text-[10px] md:text-xs text-brand-muted">Link de Compra</p>
+                                    <a href="${tx.purchaseLink.startsWith('http') ? tx.purchaseLink : 'https://'+tx.purchaseLink}" target="_blank" class="text-xs md:text-sm text-brand-accent hover:underline flex items-center gap-1 whitespace-normal break-words">
                                         Acessar página do produto <i data-lucide="external-link" class="w-3 h-3"></i>
                                     </a>
                                 </div>` : ''}
                                 
                                 ${tx.buyerName ? `
                                 <div class="flex items-center gap-2 pt-2 border-t border-brand-muted/5 mt-2">
-                                    <div class="bg-brand-panel p-2 rounded-full border border-brand-muted/10"><i data-lucide="user" class="w-4 h-4 text-brand-muted"></i></div>
+                                    <div class="bg-brand-panel p-2 rounded-full border border-brand-muted/10"><i data-lucide="user" class="w-3 h-3 md:w-4 md:h-4 text-brand-muted"></i></div>
                                     <div>
-                                        <p class="text-xs text-brand-muted">Comprador / Responsável</p>
-                                        <p class="text-sm text-white font-bold">${tx.buyerName} ${tx.buyerMatricula ? `<span class="text-xs font-normal text-brand-muted ml-1">(Mat: ${tx.buyerMatricula})</span>` : ''}</p>
+                                        <p class="text-[10px] md:text-xs text-brand-muted">Comprador / Responsável</p>
+                                        <p class="text-xs md:text-sm text-white font-bold whitespace-normal break-words">${tx.buyerName} ${tx.buyerMatricula ? `<span class="font-normal text-brand-muted ml-1">(Mat: ${tx.buyerMatricula})</span>` : ''}</p>
                                     </div>
                                 </div>` : ''}
                             </div>
@@ -1317,21 +1598,21 @@
                             
                             ${tx.receiptImage ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                <p class="text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Foto do Produto / Nota Fiscal</p>
+                                <p class="text-xs md:text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Foto do Produto / Nota Fiscal</p>
                                 ${tx.receiptImage.startsWith('data:application/pdf') ? `
-                                    <div class="flex flex-col items-center justify-center p-6 border-2 border-dashed border-brand-muted/20 rounded-lg bg-brand-panel transition-all">
-                                        <i data-lucide="file-text" class="w-12 h-12 text-brand-danger mb-3"></i>
-                                        <p class="text-white font-bold mb-4">Documento PDF Anexado</p>
-                                        <div class="flex flex-col sm:flex-row gap-3 w-full justify-center">
-                                            <a href="${tx.receiptImage}" download="comprovante.pdf" class="bg-brand-danger hover:bg-red-600 text-white font-bold py-2 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
-                                                <i data-lucide="download" class="w-5 h-5"></i> Baixar PDF
+                                    <div class="flex flex-col items-center justify-center p-4 md:p-6 border-2 border-dashed border-brand-muted/20 rounded-lg bg-brand-panel transition-all">
+                                        <i data-lucide="file-text" class="w-10 h-10 md:w-12 md:h-12 text-brand-danger mb-3"></i>
+                                        <p class="text-white font-bold mb-4 text-sm md:text-base">Documento PDF Anexado</p>
+                                        <div class="flex flex-col sm:flex-row gap-2 md:gap-3 w-full justify-center">
+                                            <a href="${tx.receiptImage}" download="comprovante.pdf" class="bg-brand-danger hover:bg-red-600 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                                <i data-lucide="download" class="w-4 h-4 md:w-5 md:h-5"></i> Baixar PDF
                                             </a>
-                                            <button onclick="viewPDF('${tx.id}')" id="btn-view-pdf-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-6 rounded-lg transition-colors flex items-center justify-center gap-2">
-                                                <i data-lucide="eye" class="w-5 h-5"></i> Visualizar na Tela
+                                            <button onclick="viewPDF('${tx.id}')" id="btn-view-pdf-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                                <i data-lucide="eye" class="w-4 h-4 md:w-5 md:h-5"></i> Visualizar
                                             </button>
                                         </div>
                                     </div>
-                                    <div id="pdf-viewer-container-${tx.id}" class="hidden w-full h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
+                                    <div id="pdf-viewer-container-${tx.id}" class="hidden w-full h-[50vh] md:h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
                                 ` : `
                                     <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal ou Produto" />
                                 `}
@@ -1346,9 +1627,14 @@
                 const tx = state.receiptTx;
                 
                 let matInfo = "N/A";
-                if (tx.memberId) {
-                    const found = state.members.find(m => m.id === tx.memberId);
-                    if (found) matInfo = found.matricula;
+                let displayName = tx.description; 
+                
+                // Raio-X Inteligente para recibos antigos: Cruza o nome da transação velha com o cadastro atualizado
+                const memberRef = matchMemberToTx(tx);
+
+                if (memberRef) {
+                    matInfo = memberRef.matricula;
+                    displayName = memberRef.rank ? `${memberRef.rank} ${memberRef.name}` : memberRef.name;
                 }
 
                 let txTime = "00:00";
@@ -1361,87 +1647,87 @@
                     }
                 }
                 
-                const monthName = { 'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril', 'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto', 'Set': 'Setembro', 'Out': 'Outubro', 'Nov': 'Novembro', 'Dez': 'Dezembro' }[tx.month] || tx.month;
+                const monthName = tx.month;
 
                 content += `
-                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[999] flex items-center justify-center p-4 overflow-y-auto">
                     <div id="receipt-modal-box" class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
                         <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
-                            <h3 id="receipt-modal-title" class="font-bold text-lg flex items-center gap-2"><i data-lucide="receipt" class="text-brand-accent"></i> Gerar Recibo</h3>
+                            <h3 id="receipt-modal-title" class="font-bold text-base md:text-lg flex items-center gap-2"><i data-lucide="receipt" class="text-brand-accent"></i> Gerar Recibo</h3>
                             <button onclick="closeReceiptModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
                         
-                        <div id="receipt-scroll-box" class="p-6 overflow-y-auto flex-grow flex flex-col gap-6">
+                        <div id="receipt-scroll-box" class="p-4 md:p-6 overflow-y-auto flex-grow flex flex-col gap-4 md:gap-6">
                             
                             ${state.isEditingReceiptSettings ? `
-                                <div class="bg-brand-dark p-5 rounded-xl border border-brand-muted/20">
-                                    <h4 class="font-bold mb-4 text-brand-accent flex items-center gap-2"><i data-lucide="pen-tool"></i> Dados do Emissor (Ficará Salvo)</h4>
+                                <div class="bg-brand-dark p-4 md:p-5 rounded-xl border border-brand-muted/20">
+                                    <h4 class="font-bold mb-4 text-brand-accent flex items-center gap-2 text-sm md:text-base"><i data-lucide="pen-tool"></i> Dados do Emissor (Ficará Salvo)</h4>
                                     <div class="space-y-4">
-                                        <input type="text" id="admin-name-input" value="${state.adminReceiptInfo.name}" placeholder="Nome do Administrador (Ex: SGT Silva)" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white"/>
-                                        <input type="text" id="admin-mat-input" value="${state.adminReceiptInfo.matricula}" placeholder="Matrícula" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white"/>
+                                        <input type="text" id="admin-name-input" value="${state.adminReceiptInfo.name}" placeholder="Nome do Adm (Ex: SGT Silva)" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white text-sm md:text-base"/>
+                                        <input type="text" id="admin-mat-input" value="${state.adminReceiptInfo.matricula}" placeholder="Matrícula" class="w-full bg-brand-panel border border-brand-muted/30 focus:border-brand-accent outline-none rounded-xl px-4 py-3 text-white text-sm md:text-base"/>
                                         
                                         <div>
                                             <div class="flex justify-between items-center mb-2">
-                                                <label class="text-sm text-brand-muted">Assinatura Digital (Use o dedo na tela)</label>
-                                                <button onclick="clearSignature()" class="text-xs text-brand-danger hover:underline">Limpar</button>
+                                                <label class="text-xs md:text-sm text-brand-muted">Assinatura Digital (Use o dedo na tela)</label>
+                                                <button onclick="clearSignature()" class="text-[10px] md:text-xs text-brand-danger hover:underline">Limpar</button>
                                             </div>
                                             <canvas id="signaturePad" width="600" height="300" class="w-full bg-white rounded-xl border-2 border-brand-muted/30 cursor-crosshair touch-none shadow-inner"></canvas>
                                         </div>
                                         
-                                        <button onclick="saveReceiptSettings()" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 rounded-xl transition-colors">
+                                        <button onclick="saveReceiptSettings()" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-3 rounded-xl transition-colors text-sm md:text-base">
                                             Salvar Configurações
                                         </button>
                                     </div>
                                 </div>
                             ` : `
                                 <div id="edit-receipt-btn-container" class="flex justify-end">
-                                    <button onclick="toggleEditReceiptSettings()" class="text-xs text-brand-accent hover:underline flex items-center gap-1"><i data-lucide="edit-3" class="w-3 h-3"></i> Editar Assinatura / Nome</button>
+                                    <button onclick="toggleEditReceiptSettings()" class="text-[10px] md:text-xs text-brand-accent hover:underline flex items-center gap-1"><i data-lucide="edit-3" class="w-3 h-3"></i> Editar Assinatura / Nome</button>
                                 </div>
 
-                                <div id="receipt-capture-area" class="bg-white text-black p-8 rounded-sm shadow-sm relative overflow-hidden shrink-0" style="font-family: Arial, sans-serif;">
+                                <div id="receipt-capture-area" class="bg-white text-black p-6 md:p-8 rounded-sm shadow-sm relative overflow-hidden shrink-0" style="font-family: Arial, sans-serif;">
                                     <div class="absolute inset-0 flex items-center justify-center opacity-[0.03] pointer-events-none">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"></path></svg>
                                     </div>
 
-                                    <div class="text-center border-b-2 border-gray-300 pb-4 mb-6">
-                                        <h2 class="text-xl font-black uppercase tracking-wider text-gray-800">Grêmio PIT</h2>
-                                        <p class="text-sm font-bold text-gray-500 tracking-widest mt-1">RECIBO DE ${tx.type === 'income' ? 'ARRECADAÇÃO' : 'DESPESA'}</p>
+                                    <div class="text-center border-b-2 border-gray-300 pb-4 mb-4 md:mb-6">
+                                        <h2 class="text-lg md:text-xl font-black uppercase tracking-wider text-gray-800">Grêmio PIT</h2>
+                                        <p class="text-xs md:text-sm font-bold text-gray-500 tracking-widest mt-1">RECIBO DE ${tx.type === 'income' ? 'ARRECADAÇÃO' : 'DESPESA'}</p>
                                     </div>
 
-                                    <div class="space-y-4 text-sm font-medium">
-                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                    <div class="space-y-3 md:space-y-4 text-xs md:text-sm font-medium">
+                                        <div class="flex justify-between items-end gap-2 md:gap-4 border-b border-gray-100 pb-2">
                                             <span class="text-gray-500 shrink-0">Valor:</span>
-                                            <span class="font-black text-lg text-right ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}">${formatCurrency(tx.amount)}</span>
+                                            <span class="font-black text-base md:text-lg text-right ${tx.type === 'income' ? 'text-green-700' : 'text-red-700'}">${formatCurrency(tx.amount)}</span>
                                         </div>
-                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                        <div class="flex justify-between items-end gap-2 md:gap-4 border-b border-gray-100 pb-2">
                                             <span class="text-gray-500 shrink-0">Contribuinte:</span>
-                                            <span class="font-bold text-gray-800 text-right uppercase">${tx.description}</span>
+                                            <span class="font-bold text-gray-800 text-right uppercase whitespace-normal break-words">${displayName}</span>
                                         </div>
-                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                        <div class="flex justify-between items-end gap-2 md:gap-4 border-b border-gray-100 pb-2">
                                             <span class="text-gray-500 shrink-0">Matrícula:</span>
                                             <span class="font-bold text-gray-800 text-right">${matInfo}</span>
                                         </div>
-                                        <div class="flex justify-between items-end gap-4 border-b border-gray-100 pb-2">
+                                        <div class="flex justify-between items-end gap-2 md:gap-4 border-b border-gray-100 pb-2">
                                             <span class="text-gray-500 shrink-0">Data / Hora:</span>
                                             <span class="font-bold text-gray-800 text-right">${formattedDate} às ${txTime}</span>
                                         </div>
-                                        <div class="flex justify-between items-end gap-4 pb-2">
-                                            <span class="text-gray-500 shrink-0">Mês de Competência:</span>
+                                        <div class="flex justify-between items-end gap-2 md:gap-4 pb-2">
+                                            <span class="text-gray-500 shrink-0">Competência:</span>
                                             <span class="font-bold text-gray-800 text-right uppercase">${monthName}</span>
                                         </div>
                                     </div>
 
-                                    <div class="mt-10 pt-6 border-t-2 border-gray-300 text-center flex flex-col items-center">
-                                        ${state.adminReceiptInfo.signatureDataUrl ? `<img src="${state.adminReceiptInfo.signatureDataUrl}" class="h-16 object-contain mb-1" />` : '<div class="h-16 mb-1"></div>'}
-                                        <div class="w-48 border-t border-gray-800 mb-2"></div>
-                                        <p class="font-bold text-gray-900 uppercase text-xs">${state.adminReceiptInfo.name || 'Nome do Responsável'}</p>
-                                        <p class="text-xs text-gray-500 font-bold">Mat: ${state.adminReceiptInfo.matricula || '000000'}</p>
-                                        <p class="text-[10px] text-gray-400 mt-4 italic">Documento emitido eletronicamente via Sistema PIT.</p>
+                                    <div class="mt-8 md:mt-10 pt-4 md:pt-6 border-t-2 border-gray-300 text-center flex flex-col items-center">
+                                        ${state.adminReceiptInfo.signatureDataUrl ? `<img src="${state.adminReceiptInfo.signatureDataUrl}" class="h-12 md:h-16 object-contain mb-1" />` : '<div class="h-12 md:h-16 mb-1"></div>'}
+                                        <div class="w-40 md:w-48 border-t border-gray-800 mb-2"></div>
+                                        <p class="font-bold text-gray-900 uppercase text-[10px] md:text-xs">${state.adminReceiptInfo.name || 'Nome do Responsável'}</p>
+                                        <p class="text-[10px] md:text-xs text-gray-500 font-bold">Mat: ${state.adminReceiptInfo.matricula || '000000'}</p>
+                                        <p class="text-[8px] md:text-[10px] text-gray-400 mt-4 italic">Documento emitido eletronicamente via Sistema PIT.</p>
                                     </div>
                                 </div>
 
-                                <button id="btn-share-receipt" onclick="shareReceiptImage()" class="w-full bg-[#10B981] hover:bg-green-600 text-white font-bold py-4 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 mt-2">
-                                    <i data-lucide="share-2" class="w-5 h-5"></i> Enviar Imagem no WhatsApp
+                                <button id="btn-share-receipt" onclick="shareReceiptImage()" class="w-full bg-[#10B981] hover:bg-green-600 text-white font-bold py-3 md:py-4 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 mt-2 text-sm md:text-base">
+                                    <i data-lucide="share-2" class="w-4 h-4 md:w-5 md:h-5"></i> Enviar no WhatsApp
                                 </button>
                             `}
                         </div>
@@ -1461,3 +1747,4 @@
     </script>
 </body>
 </html>
+```
