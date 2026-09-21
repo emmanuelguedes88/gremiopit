@@ -144,6 +144,10 @@
             showDetailsModal: false,
             detailsTx: null,
             showPassword: false,
+
+            showEditTxModal: false,
+            editTxData: {},
+            editingTxId: null,
             
             memberSearchQuery: '',
             memberPaymentFilter: 'all',
@@ -428,6 +432,54 @@
             }
         };
 
+        window.toggleInstallmentFields = (isEdit = false) => {
+            const prefix = isEdit ? 'editTrans' : 'newTrans';
+            const checkbox = document.getElementById(`${prefix}IsInstallment`);
+            const fields = document.getElementById(`${prefix}InstallmentFields`);
+            if(checkbox && fields) {
+                if(checkbox.checked) fields.classList.remove('hidden');
+                else fields.classList.add('hidden');
+            }
+        };
+
+        window.openEditTxModal = (id) => {
+            const tx = state.transactions.find(t => t.id === id);
+            if(!tx) return;
+            state.editingTxId = id;
+            state.editTxData = { ...tx };
+            state.showEditTxModal = true;
+            render();
+        };
+
+        window.closeEditTxModal = () => {
+            state.showEditTxModal = false;
+            state.editingTxId = null;
+            render();
+        };
+
+        window.saveEditTx = async (e) => {
+            e.preventDefault();
+            if(!state.editingTxId) return;
+            
+            const isInst = document.getElementById('editTransIsInstallment')?.checked || false;
+            
+            const updatedData = {
+                description: document.getElementById('editTransDesc').value,
+                amount: parseFloat(document.getElementById('editTransAmount').value),
+                date: document.getElementById('editTransDate').value || state.editTxData.date,
+                isInstallment: isInst,
+                totalAmount: isInst ? parseFloat(document.getElementById('editTransTotalAmount').value || 0) : 0,
+                currentInstallment: isInst ? parseInt(document.getElementById('editTransCurrentInst').value || 1) : 1,
+                totalInstallments: isInst ? parseInt(document.getElementById('editTransTotalInst').value || 1) : 1
+            };
+
+            try {
+                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', state.editingTxId), updatedData);
+                logAction(`Despesa atualizada com sucesso: ${updatedData.description}`);
+                closeEditTxModal();
+            } catch(err) { console.error(err); }
+        };
+
         window.handleExpenseImage = (e) => {
             const file = e.target.files[0];
             if (!file) { state.expenseImageBase64 = null; return; }
@@ -541,12 +593,17 @@
 
             let extraData = {};
             if (type === 'expense') {
+                const isInst = document.getElementById('newTransIsInstallment')?.checked || false;
                 extraData = {
                     purchaseLocation: document.getElementById('newTransLocation')?.value || '',
                     purchaseLink: document.getElementById('newTransLink')?.value || '',
                     buyerName: document.getElementById('newTransBuyerName')?.value || '',
                     buyerMatricula: document.getElementById('newTransBuyerMat')?.value || '',
-                    receiptImage: state.expenseImageBase64 || null
+                    receiptImage: state.expenseImageBase64 || null,
+                    isInstallment: isInst,
+                    totalAmount: isInst ? parseFloat(document.getElementById('newTransTotalAmount').value || 0) : 0,
+                    currentInstallment: isInst ? parseInt(document.getElementById('newTransCurrentInst').value || 1) : 1,
+                    totalInstallments: isInst ? parseInt(document.getElementById('newTransTotalInst').value || 1) : 1
                 };
             }
 
@@ -572,6 +629,14 @@
                     if(document.getElementById('newTransBuyerName')) document.getElementById('newTransBuyerName').value = '';
                     if(document.getElementById('newTransBuyerMat')) document.getElementById('newTransBuyerMat').value = '';
                     if(document.getElementById('newTransPhoto')) document.getElementById('newTransPhoto').value = '';
+                    
+                    if(document.getElementById('newTransIsInstallment')) document.getElementById('newTransIsInstallment').checked = false;
+                    if(document.getElementById('newTransTotalAmount')) document.getElementById('newTransTotalAmount').value = '';
+                    if(document.getElementById('newTransCurrentInst')) document.getElementById('newTransCurrentInst').value = '';
+                    if(document.getElementById('newTransTotalInst')) document.getElementById('newTransTotalInst').value = '';
+                    const instFields = document.getElementById('newTransInstallmentFields');
+                    if(instFields) instFields.classList.add('hidden');
+                    
                     state.expenseImageBase64 = null;
                 }
             } catch(e) { console.error(e); }
@@ -1298,6 +1363,29 @@
 
                             <div id="expenseExtraFields" class="hidden space-y-4 pt-4 border-t border-brand-muted/20">
                                 <h4 class="text-xs md:text-sm font-bold text-brand-warning flex items-center gap-2"><i data-lucide="info" class="w-4 h-4"></i> Detalhes da Compra (Transparência)</h4>
+                                
+                                <div class="bg-brand-dark/50 p-3 rounded-xl border border-brand-muted/20">
+                                    <label class="flex items-center gap-2 cursor-pointer text-sm font-bold text-brand-accent">
+                                        <input type="checkbox" id="newTransIsInstallment" onchange="toggleInstallmentFields()" class="w-4 h-4 accent-brand-accent rounded cursor-pointer"/>
+                                        📦 Compra Parcelada?
+                                    </label>
+                                    
+                                    <div id="newTransInstallmentFields" class="hidden grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4 mt-3 pt-3 border-t border-brand-muted/10">
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Valor Total do Produto</label>
+                                            <input type="number" step="0.01" id="newTransTotalAmount" placeholder="Ex: 1200.00" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white placeholder-brand-muted text-sm mt-1"/>
+                                        </div>
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Parcela Atual (Nº)</label>
+                                            <input type="number" id="newTransCurrentInst" placeholder="Ex: 1" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white placeholder-brand-muted text-sm mt-1"/>
+                                        </div>
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Total de Parcelas</label>
+                                            <input type="number" id="newTransTotalInst" placeholder="Ex: 10" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white placeholder-brand-muted text-sm mt-1"/>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
                                     <input type="text" id="newTransLocation" placeholder="Local da Compra (Ex: Supermercado X)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                     <input type="url" id="newTransLink" placeholder="Link da Compra (se internet)" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
@@ -1393,7 +1481,10 @@
                                                 <td class="py-3 px-3 md:px-4 text-xs md:text-sm text-brand-muted whitespace-nowrap">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
                                                 <td class="py-3 px-3 md:px-4">
                                                     <div class="flex flex-col items-start gap-1">
-                                                        <p class="font-bold text-white text-xs md:text-base whitespace-normal break-words leading-tight">${tx.description}</p>
+                                                        <div class="font-bold text-white text-xs md:text-base whitespace-normal break-words leading-tight flex flex-wrap items-center gap-2">
+                                                            ${tx.description}
+                                                            ${tx.isInstallment ? `<span class="bg-brand-accent/10 text-brand-accent text-[10px] px-1.5 py-0.5 rounded border border-brand-accent/20 whitespace-nowrap uppercase tracking-wider font-bold"><i data-lucide="layers" class="inline w-3 h-3 mr-0.5"></i> Parc. ${tx.currentInstallment}/${tx.totalInstallments}</span>` : ''}
+                                                        </div>
                                                         ${(tx.purchaseLocation || tx.purchaseLink || tx.buyerName || tx.receiptImage) ? `
                                                             <button onclick="openDetailsModal('${tx.id}')" title="Ver Detalhes da Compra" class="bg-brand-warning/10 text-brand-warning hover:bg-brand-warning/20 px-2 py-1 rounded-md text-[10px] md:text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors border border-brand-warning/20 hover:border-brand-warning/40 mt-1">
                                                                 <i data-lucide="search" class="w-3 h-3"></i> Transparência
@@ -1407,10 +1498,13 @@
                                                 ${state.isAdmin ? `
                                                 <td class="py-3 px-3 md:px-4">
                                                     <div class="flex items-center justify-center gap-1 md:gap-2">
-                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                        <button onclick="openEditTxModal('${tx.id}')" title="Editar Despesa/Parcelamento" class="text-blue-400 hover:bg-blue-400/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-blue-400/30">
+                                                            <i data-lucide="edit-3" class="w-4 h-4 md:w-5 md:h-5"></i>
+                                                        </button>
+                                                        <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
                                                             <i data-lucide="receipt" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
-                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-1.5 md:p-2 rounded-lg transition-colors">
+                                                        <button onclick="handleDeleteTransaction('${tx.id}')" title="Estornar" class="text-brand-danger hover:bg-brand-danger/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-brand-danger/30">
                                                             <i data-lucide="trash-2" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
                                                     </div>
@@ -1460,28 +1554,45 @@
 
                         <div class="bg-brand-panel rounded-2xl p-4 md:p-6 shadow-xl border border-brand-warning/20 h-[70vh] flex flex-col">
                             <div class="flex items-center justify-between mb-4 md:mb-6 shrink-0">
-                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-brand-warning"><i data-lucide="image" class="text-brand-warning"></i> Mural de Notas Fiscais</h3>
+                                <h3 class="text-base md:text-lg font-bold flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="text-brand-warning"></i> Portal da Transparência</h3>
                             </div>
                             
-                            <div class="overflow-y-auto flex-1 pr-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="overflow-y-auto flex-1 pr-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
                                 ${txWithReceipts.length === 0 ? `
                                     <div class="col-span-full text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
                                         <i data-lucide="receipt" class="w-10 h-10 md:w-12 md:h-12 mx-auto mb-3 opacity-50 text-brand-warning"></i>
                                         <p class="text-sm">Nenhuma nota fiscal ou comprovante anexado nas despesas ainda.</p>
                                     </div>
                                 ` : txWithReceipts.map(tx => `
-                                    <div class="bg-brand-dark rounded-xl border border-brand-muted/20 overflow-hidden flex flex-col group cursor-pointer hover:border-brand-warning/40 transition-all" onclick="openDetailsModal('${tx.id}')">
-                                        <div class="h-32 bg-white flex items-center justify-center overflow-hidden">
-                                            ${tx.receiptImage.startsWith('data:application/pdf') ? 
-                                                '<i data-lucide="file-text" class="w-16 h-16 text-brand-danger opacity-80"></i>' : 
-                                                `<img src="${tx.receiptImage}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />`
-                                            }
+                                    <div class="bg-brand-dark rounded-xl border border-brand-muted/20 p-4 flex flex-col justify-between hover:border-brand-warning/40 transition-all group">
+                                        <div>
+                                            <div class="flex justify-between items-start mb-3 gap-2">
+                                                <h4 class="font-bold text-white text-sm md:text-base leading-tight break-words">
+                                                    ${tx.description}
+                                                    ${tx.isInstallment ? `<span class="inline-block ml-1 bg-brand-accent/10 text-brand-accent text-[10px] px-1.5 py-0.5 rounded border border-brand-accent/20 whitespace-nowrap"><i data-lucide="layers" class="inline w-3 h-3"></i> Parc. ${tx.currentInstallment}/${tx.totalInstallments}</span>` : ''}
+                                                </h4>
+                                                <span class="bg-brand-danger/10 text-brand-danger font-bold text-[10px] md:text-xs px-2 py-1 rounded-md shrink-0 border border-brand-danger/20">
+                                                    -${formatCurrency(tx.amount)}
+                                                </span>
+                                            </div>
+                                            
+                                            ${tx.isInstallment ? `
+                                            <div class="bg-brand-panel p-3 rounded-lg border border-brand-muted/10 mb-4 text-[10px] md:text-xs flex flex-wrap justify-between gap-3 shadow-inner">
+                                                <div class="flex flex-col gap-0.5"><span class="text-brand-muted font-bold uppercase">Valor Total</span><span class="text-white font-black">${formatCurrency(tx.totalAmount)}</span></div>
+                                                <div class="flex flex-col text-right gap-0.5"><span class="text-brand-muted font-bold uppercase">Falta Pagar (Saldo)</span><span class="text-brand-warning font-black">${formatCurrency(Math.max(0, tx.totalAmount - (tx.amount * tx.currentInstallment)))}</span></div>
+                                            </div>
+                                            ` : ''}
+
+                                            <div class="text-[10px] md:text-xs text-brand-muted space-y-1.5 mb-4">
+                                                <p class="flex items-center gap-1.5"><i data-lucide="calendar" class="w-3 h-3 text-brand-muted/70"></i> Data: ${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
+                                                ${tx.purchaseLocation ? `<p class="flex items-center gap-1.5 whitespace-normal break-words"><i data-lucide="map-pin" class="w-3 h-3 text-brand-muted/70 shrink-0"></i> ${tx.purchaseLocation}</p>` : ''}
+                                                ${tx.buyerName ? `<p class="flex items-center gap-1.5 whitespace-normal break-words"><i data-lucide="user" class="w-3 h-3 text-brand-muted/70 shrink-0"></i> ${tx.buyerName}</p>` : ''}
+                                            </div>
                                         </div>
-                                        <div class="p-3">
-                                            <p class="text-xs text-brand-muted mb-1">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
-                                            <p class="font-bold text-white text-sm line-clamp-2 leading-tight">${tx.description}</p>
-                                            <p class="font-bold text-brand-danger text-sm mt-2">${formatCurrency(tx.amount)}</p>
-                                        </div>
+                                        
+                                        <button onclick="openDetailsModal('${tx.id}')" class="w-full bg-brand-warning/10 hover:bg-brand-warning/20 text-brand-warning border border-brand-warning/30 font-bold py-2 md:py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                            ${tx.receiptImage.startsWith('data:application/pdf') ? '<i data-lucide="file-text" class="w-4 h-4"></i> Ver Nota Fiscal (PDF)' : '<i data-lucide="image" class="w-4 h-4"></i> Ver Nota Fiscal (Foto)'}
+                                        </button>
                                     </div>
                                 `).join('')}
                             </div>
@@ -1558,7 +1669,7 @@
                             </div>
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Valor</p>
+                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Valor da Saída/Parcela</p>
                                     <p class="font-bold text-brand-danger text-sm md:text-base">${formatCurrency(tx.amount)}</p>
                                 </div>
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
@@ -1567,6 +1678,24 @@
                                 </div>
                             </div>
                             
+                            ${tx.isInstallment ? `
+                            <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10 space-y-3">
+                                <h4 class="font-bold text-brand-accent text-xs md:text-sm uppercase tracking-wider mb-2 border-b border-brand-muted/10 pb-2 flex items-center gap-2"><i data-lucide="package" class="w-4 h-4"></i> Status do Parcelamento</h4>
+                                <div class="flex justify-between items-center">
+                                    <p class="text-[10px] md:text-xs text-brand-muted">Parcela Atual / Referência</p>
+                                    <p class="text-xs md:text-sm text-brand-accent font-bold bg-brand-accent/10 px-2 py-1 rounded border border-brand-accent/20">${tx.currentInstallment} de ${tx.totalInstallments}</p>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <p class="text-[10px] md:text-xs text-brand-muted">Valor Total do Produto</p>
+                                    <p class="text-xs md:text-sm text-white font-bold">${formatCurrency(tx.totalAmount)}</p>
+                                </div>
+                                <div class="flex justify-between items-center pt-2 border-t border-brand-muted/10">
+                                    <p class="text-[10px] md:text-xs text-brand-muted">Saldo Devedor (Falta Pagar)</p>
+                                    <p class="text-sm md:text-base text-brand-warning font-black">${formatCurrency(Math.max(0, tx.totalAmount - (tx.amount * tx.currentInstallment)))}</p>
+                                </div>
+                            </div>
+                            ` : ''}
+
                             ${tx.purchaseLocation || tx.purchaseLink || tx.buyerName ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10 space-y-3">
                                 <h4 class="font-bold text-brand-warning text-xs md:text-sm uppercase tracking-wider mb-2 border-b border-brand-muted/10 pb-2">Informações da Compra</h4>
@@ -1618,6 +1747,63 @@
                                 `}
                             </div>
                             ` : ''}
+                        </div>
+                    </div>
+                </div>`;
+            }
+
+            if (state.showEditTxModal && state.editTxData) {
+                const tx = state.editTxData;
+                content += `
+                <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[999] flex items-center justify-center p-4 overflow-y-auto">
+                    <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
+                        <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
+                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-blue-400"><i data-lucide="edit" class="w-5 h-5"></i> Editar Despesa</h3>
+                            <button onclick="closeEditTxModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        <div class="p-4 md:p-6 overflow-y-auto flex-grow">
+                            <form onsubmit="saveEditTx(event)" class="space-y-4">
+                                <div>
+                                    <label class="text-xs font-bold text-brand-muted">Descrição</label>
+                                    <input type="text" id="editTransDesc" value="${tx.description}" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white mt-1" required/>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div>
+                                        <label class="text-xs font-bold text-brand-muted">Valor da Saída/Parcela (R$)</label>
+                                        <input type="number" step="0.01" id="editTransAmount" value="${tx.amount}" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-brand-danger font-bold mt-1" required/>
+                                    </div>
+                                    <div>
+                                        <label class="text-xs font-bold text-brand-muted">Data (opcional alterar)</label>
+                                        <input type="text" id="editTransDate" value="${tx.date}" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-4 py-3 text-white mt-1"/>
+                                    </div>
+                                </div>
+                                
+                                <div class="bg-brand-dark/50 p-4 rounded-xl border border-brand-muted/20 mt-2">
+                                    <label class="flex items-center gap-2 cursor-pointer text-sm font-bold text-brand-accent">
+                                        <input type="checkbox" id="editTransIsInstallment" onchange="toggleInstallmentFields(true)" ${tx.isInstallment ? 'checked' : ''} class="w-4 h-4 accent-brand-accent rounded cursor-pointer"/>
+                                        📦 Compra Parcelada?
+                                    </label>
+                                    
+                                    <div id="editTransInstallmentFields" class="${tx.isInstallment ? 'grid' : 'hidden'} grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4 mt-4 pt-4 border-t border-brand-muted/10">
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Valor Total</label>
+                                            <input type="number" step="0.01" id="editTransTotalAmount" value="${tx.totalAmount || ''}" placeholder="1200.00" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white text-sm mt-1"/>
+                                        </div>
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Parcela Atual</label>
+                                            <input type="number" id="editTransCurrentInst" value="${tx.currentInstallment || ''}" placeholder="1" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white text-sm mt-1"/>
+                                        </div>
+                                        <div>
+                                            <label class="text-[10px] md:text-xs text-brand-muted font-bold">Qtd Parcelas</label>
+                                            <input type="number" id="editTransTotalInst" value="${tx.totalInstallments || ''}" placeholder="10" class="w-full bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-accent rounded-xl px-3 py-2 text-white text-sm mt-1"/>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-4">
+                                    <i data-lucide="save" class="w-5 h-5"></i> Salvar Alterações
+                                </button>
+                            </form>
                         </div>
                     </div>
                 </div>`;
