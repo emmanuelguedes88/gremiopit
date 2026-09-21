@@ -109,7 +109,6 @@
         const auth = getAuth(app);
         const APP_ID = 'gremiopit-v1';
         
-        // TRADUTOR DE MESES: Garante que os registros salvos como "Ago", "Set" sejam lidos como "Agosto", "Setembro" sem perder dados
         const MONTH_MAP = {
             'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril',
             'Mai': 'Maio', 'Jun': 'Junho', 'Jul': 'Julho', 'Ago': 'Agosto',
@@ -141,6 +140,10 @@
             generatedReceiptFile: null,
 
             expenseImageBase64: null,
+            extraImageBase64: null, // Nova foto adicional para explicação/observação
+            editExpenseImageBase64: null,
+            editExtraImageBase64: null,
+
             showDetailsModal: false,
             detailsTx: null,
             showPassword: false,
@@ -185,7 +188,6 @@
             } catch (error) { console.error("Erro ao salvar log", error); }
         };
 
-        // Função Raio-X Inteligente Aprimorada (Corrige vínculo de pagamentos antigos)
         const matchMemberToTx = (tx) => {
             if (!tx) return null;
             if (tx.memberId) {
@@ -193,21 +195,16 @@
                 if (m) return m;
             }
             const tDescLower = String(tx.description || '').toLowerCase();
-            
-            // Filtro que remove acentos, patentes (SGT, CB, SD) e caracteres especiais para igualar as palavras
             const normalize = (str) => {
                 return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
                           .replace(/[^a-z0-9 ]/g, "")
                           .replace(/\b(sd|cb|sgt|3 sgt|2 sgt|1 sgt|st|ten|cap|maj|tc|cel)\b/g, "")
                           .replace(/\s+/g, " ").trim();
             };
-            
             const normDesc = normalize(tDescLower);
-
             return state.members.find(m => {
                 const normName = normalize(String(m.name || '').toLowerCase());
                 if(!normName || !normDesc) return false;
-                
                 return normName === normDesc || 
                        (normName.length > 3 && normDesc.includes(normName)) ||
                        (normDesc.length > 3 && normName.includes(normDesc));
@@ -227,7 +224,6 @@
                 if(isTransitioningAuth) return;
                 state.members = snapshot.docs.map(doc => {
                     let d = doc.data();
-                    // AUTOCURA DOS MESES: Traduz 'Ago' para 'Agosto' na listagem de pagamentos do Policial
                     if(d.payments) {
                         let healedPayments = {};
                         Object.keys(d.payments).forEach(k => {
@@ -250,7 +246,6 @@
                 if(isTransitioningAuth) return;
                 state.transactions = snapshot.docs.map(doc => {
                     let d = doc.data();
-                    // AUTOCURA DOS MESES: Traduz 'Ago' para 'Agosto' nas transações financeiras
                     if(MONTH_MAP[d.month]) d.month = MONTH_MAP[d.month];
                     return { id: doc.id, ...d };
                 }).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
@@ -279,7 +274,6 @@
                 state.user = null;
                 state.isAdmin = false;
                 signInAnonymously(auth).catch((err) => {
-                    console.warn("Autenticação anônima desabilitada.");
                     state.dbError = 'auth-anon-disabled';
                     render();
                 });
@@ -384,7 +378,6 @@
             if (!member) return;
             
             const existingTx = state.transactions.find(t => t.type === 'income' && t.month === month && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
-
             const isCurrentlyPaid = (member.payments || {})[month] || !!existingTx;
             const newStatus = !isCurrentlyPaid;
 
@@ -444,52 +437,15 @@
             }
         };
 
-        window.openEditTxModal = (id) => {
-            const tx = state.transactions.find(t => t.id === id);
-            if(!tx) return;
-            state.editingTxId = id;
-            state.editTxData = { ...tx };
-            state.showEditTxModal = true;
-            render();
-        };
-
-        window.closeEditTxModal = () => {
-            state.showEditTxModal = false;
-            state.editingTxId = null;
-            render();
-        };
-
-        window.saveEditTx = async (e) => {
-            e.preventDefault();
-            if(!state.editingTxId) return;
-            
-            const isInst = document.getElementById('editTransIsInstallment')?.checked || false;
-            
-            const updatedData = {
-                description: document.getElementById('editTransDesc').value,
-                amount: parseFloat(document.getElementById('editTransAmount').value),
-                date: document.getElementById('editTransDate').value || state.editTxData.date,
-                isInstallment: isInst,
-                totalAmount: isInst ? parseFloat(document.getElementById('editTransTotalAmount').value || 0) : 0,
-                currentInstallment: isInst ? parseInt(document.getElementById('editTransCurrentInst').value || 1) : 1,
-                totalInstallments: isInst ? parseInt(document.getElementById('editTransTotalInst').value || 1) : 1
-            };
-
-            try {
-                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', state.editingTxId), updatedData);
-                logAction(`Despesa atualizada com sucesso: ${updatedData.description}`);
-                closeEditTxModal();
-            } catch(err) { console.error(err); }
-        };
-
-        window.handleExpenseImage = (e) => {
+        // Função universal para processar e comprimir imagens/PDFs
+        window.processFile = (e, stateKey) => {
             const file = e.target.files[0];
-            if (!file) { state.expenseImageBase64 = null; return; }
+            if (!file) { state[stateKey] = null; return; }
             
             if (file.type === 'application/pdf') {
                 const reader = new FileReader();
                 reader.onload = (event) => {
-                    state.expenseImageBase64 = event.target.result;
+                    state[stateKey] = event.target.result;
                 };
                 reader.readAsDataURL(file);
                 return;
@@ -511,11 +467,61 @@
                     canvas.height = height;
                     const ctx = canvas.getContext('2d');
                     ctx.drawImage(img, 0, 0, width, height);
-                    state.expenseImageBase64 = canvas.toDataURL('image/jpeg', 0.7);
+                    state[stateKey] = canvas.toDataURL('image/jpeg', 0.7);
                 };
                 img.src = event.target.result;
             };
             reader.readAsDataURL(file);
+        };
+
+        window.openEditTxModal = (id) => {
+            const tx = state.transactions.find(t => t.id === id);
+            if(!tx) return;
+            state.editingTxId = id;
+            state.editTxData = { ...tx };
+            state.editExpenseImageBase64 = null;
+            state.editExtraImageBase64 = null;
+            state.showEditTxModal = true;
+            render();
+        };
+
+        window.closeEditTxModal = () => {
+            state.showEditTxModal = false;
+            state.editingTxId = null;
+            state.editExpenseImageBase64 = null;
+            state.editExtraImageBase64 = null;
+            render();
+        };
+
+        window.saveEditTx = async (e) => {
+            e.preventDefault();
+            if(!state.editingTxId) return;
+            
+            const isInst = document.getElementById('editTransIsInstallment')?.checked || false;
+            
+            const updatedData = {
+                description: document.getElementById('editTransDesc').value,
+                amount: parseFloat(document.getElementById('editTransAmount').value),
+                date: document.getElementById('editTransDate').value || state.editTxData.date,
+                observation: document.getElementById('editTransObs')?.value || '',
+                isInstallment: isInst,
+                totalAmount: isInst ? parseFloat(document.getElementById('editTransTotalAmount').value || 0) : 0,
+                currentInstallment: isInst ? parseInt(document.getElementById('editTransCurrentInst').value || 1) : 1,
+                totalInstallments: isInst ? parseInt(document.getElementById('editTransTotalInst').value || 1) : 1
+            };
+
+            if (state.editExpenseImageBase64) {
+                updatedData.receiptImage = state.editExpenseImageBase64;
+            }
+            if (state.editExtraImageBase64) {
+                updatedData.extraPhoto = state.editExtraImageBase64;
+            }
+
+            try {
+                await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'transactions', state.editingTxId), updatedData);
+                logAction(`Despesa atualizada com sucesso: ${updatedData.description}`);
+                closeEditTxModal();
+            } catch(err) { console.error(err); }
         };
 
         window.openDetailsModal = (id) => {
@@ -532,11 +538,15 @@
             render();
         };
 
-        window.viewPDF = (id) => {
+        window.viewPDF = (id, type = 'main') => {
             const tx = state.transactions.find(t => t.id === id);
-            if (!tx || !tx.receiptImage) return;
-            const container = document.getElementById(`pdf-viewer-container-${id}`);
-            const btn = document.getElementById(`btn-view-pdf-${id}`);
+            if (!tx) return;
+            
+            const base64Str = type === 'main' ? tx.receiptImage : tx.extraPhoto;
+            if (!base64Str) return;
+
+            const container = document.getElementById(`pdf-viewer-container-${type}-${id}`);
+            const btn = document.getElementById(`btn-view-pdf-${type}-${id}`);
 
             if (container) {
                 if (!container.classList.contains('hidden')) {
@@ -547,7 +557,7 @@
                     return;
                 }
                 try {
-                    const base64Data = tx.receiptImage.split(',')[1];
+                    const base64Data = base64Str.split(',')[1];
                     if (!base64Data) return;
                     
                     const byteCharacters = atob(base64Data);
@@ -601,7 +611,9 @@
                     purchaseLink: document.getElementById('newTransLink')?.value || '',
                     buyerName: document.getElementById('newTransBuyerName')?.value || '',
                     buyerMatricula: document.getElementById('newTransBuyerMat')?.value || '',
+                    observation: document.getElementById('newTransObs')?.value || '',
                     receiptImage: state.expenseImageBase64 || null,
+                    extraPhoto: state.extraImageBase64 || null, // Foto adicional/explicativa
                     isInstallment: isInst,
                     totalAmount: isInst ? parseFloat(document.getElementById('newTransTotalAmount').value || 0) : 0,
                     currentInstallment: isInst ? parseInt(document.getElementById('newTransCurrentInst').value || 1) : 1,
@@ -630,7 +642,9 @@
                     if(document.getElementById('newTransLink')) document.getElementById('newTransLink').value = '';
                     if(document.getElementById('newTransBuyerName')) document.getElementById('newTransBuyerName').value = '';
                     if(document.getElementById('newTransBuyerMat')) document.getElementById('newTransBuyerMat').value = '';
+                    if(document.getElementById('newTransObs')) document.getElementById('newTransObs').value = '';
                     if(document.getElementById('newTransPhoto')) document.getElementById('newTransPhoto').value = '';
+                    if(document.getElementById('newTransExtraPhoto')) document.getElementById('newTransExtraPhoto').value = '';
                     
                     if(document.getElementById('newTransIsInstallment')) document.getElementById('newTransIsInstallment').checked = false;
                     if(document.getElementById('newTransTotalAmount')) document.getElementById('newTransTotalAmount').value = '';
@@ -640,6 +654,7 @@
                     if(instFields) instFields.classList.add('hidden');
                     
                     state.expenseImageBase64 = null;
+                    state.extraImageBase64 = null;
                 }
             } catch(e) { console.error(e); }
         };
@@ -689,17 +704,14 @@
             });
 
             paid.sort();
-
             let text = `*PAGANTES DO MÊS - GRÊMIO PIT* 🚔\n`;
             text += `*Mês Referência:* ${m}\n\n`;
-
             text += `✅ *POLICIAIS QUITES (${paid.length}):*\n`;
             if (paid.length === 0) {
                 text += `Nenhum pagamento registrado neste mês.\n`;
             } else {
                 paid.forEach(name => text += `✓ ${name}\n`);
             }
-
             text += `\n_Resumo gerado automaticamente pelo Sistema._`;
 
             const encoded = encodeURIComponent(text);
@@ -712,12 +724,9 @@
                 alert("Acesso Negado: Apenas o administrador pode gerar recibos.");
                 return;
             }
-            
             const member = state.members.find(m => m.id === memberId);
             if (!member) return;
-            
             const tx = state.transactions.find(t => t.type === 'income' && t.month === month && (t.memberId === member.id || matchMemberToTx(t)?.id === member.id));
-
             if (tx) {
                 openReceiptModal(tx.id);
             } else {
@@ -727,7 +736,6 @@
 
         window.openReceiptModal = (id) => {
             if (!state.user || !state.isAdmin) return;
-            
             const tx = state.transactions.find(t => t.id === id);
             if(!tx) return;
             state.receiptTx = tx;
@@ -738,7 +746,6 @@
             } else {
                 state.isEditingReceiptSettings = false;
             }
-            
             state.showReceiptModal = true;
             render();
         };
@@ -765,11 +772,9 @@
                 alert("Preencha seu Nome e Matrícula.");
                 return;
             }
-
             state.adminReceiptInfo.name = name;
             state.adminReceiptInfo.matricula = mat;
             state.adminReceiptInfo.signatureDataUrl = canvas.toDataURL('image/png');
-            
             localStorage.setItem('gremio_admin_receipt_info', JSON.stringify(state.adminReceiptInfo));
             state.isEditingReceiptSettings = false;
             render();
@@ -792,7 +797,6 @@
             ctx.lineWidth = 3;
             ctx.lineCap = 'round';
             let drawing = false;
-
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -832,7 +836,6 @@
         window.shareReceiptImage = async () => {
             if (state.generatedReceiptFile) {
                 try {
-                    // Try native share API first
                     if (navigator.share && navigator.canShare && navigator.canShare({ files: [state.generatedReceiptFile] })) {
                         await navigator.share({
                             files: [state.generatedReceiptFile],
@@ -840,12 +843,9 @@
                             text: 'Segue em anexo o recibo da movimentação.'
                         });
                         return;
-                    } else {
-                        throw new Error("Share API files not supported");
-                    }
+                    } else { throw new Error("Share API files not supported"); }
                 } catch(e) { 
                     console.warn("Fallback de compartilhamento acionado: ", e);
-                    // Fallback to Download Image
                     const url = URL.createObjectURL(state.generatedReceiptFile);
                     const a = document.createElement('a');
                     a.href = url;
@@ -872,26 +872,16 @@
                 overlay.style.height = 'auto';
             }
             if(modalBox) modalBox.style.maxHeight = 'none';
-            if(scrollBox) {
-                scrollBox.style.overflow = 'visible';
-                scrollBox.scrollTop = 0; 
-            }
+            if(scrollBox) { scrollBox.style.overflow = 'visible'; scrollBox.scrollTop = 0; }
             
             await new Promise(r => setTimeout(r, 200));
             
             try {
                 const canvas = await html2canvas(element, { 
-                    scale: 2, 
-                    backgroundColor: '#ffffff', 
-                    useCORS: true,
-                    scrollY: -window.scrollY 
+                    scale: 2, backgroundColor: '#ffffff', useCORS: true, scrollY: -window.scrollY 
                 });
                 
-                if (overlay) {
-                    overlay.style.position = '';
-                    overlay.style.alignItems = '';
-                    overlay.style.height = '';
-                }
+                if (overlay) { overlay.style.position = ''; overlay.style.alignItems = ''; overlay.style.height = ''; }
                 if(modalBox) modalBox.style.maxHeight = '';
                 if(scrollBox) scrollBox.style.overflow = '';
 
@@ -901,7 +891,6 @@
                     
                     const captureArea = document.getElementById('receipt-capture-area');
                     if (captureArea) captureArea.style.display = 'none';
-                    
                     const editBtn = document.getElementById('edit-receipt-btn-container');
                     if (editBtn) editBtn.style.display = 'none';
 
@@ -910,11 +899,9 @@
                         previewContainer = document.createElement('div');
                         previewContainer.id = 'receipt-preview-container';
                         previewContainer.className = 'w-full flex justify-center my-2';
-                        
                         const previewImg = document.createElement('img');
                         previewImg.id = 'receipt-preview-img';
                         previewImg.className = 'w-full max-w-sm rounded-lg shadow-[0_0_15px_rgba(0,0,0,0.5)] border border-brand-muted/20';
-                        
                         previewContainer.appendChild(previewImg);
                         btn.parentNode.insertBefore(previewContainer, btn);
                     }
@@ -933,15 +920,9 @@
                 console.error(err);
                 btn.disabled = false;
                 btn.innerHTML = origHTML;
-                
-                if (overlay) {
-                    overlay.style.position = '';
-                    overlay.style.alignItems = '';
-                    overlay.style.height = '';
-                }
+                if (overlay) { overlay.style.position = ''; overlay.style.alignItems = ''; overlay.style.height = ''; }
                 if(modalBox) modalBox.style.maxHeight = '';
                 if(scrollBox) scrollBox.style.overflow = '';
-                
                 lucide.createIcons();
                 alert("Ocorreu um erro ao gerar a imagem do recibo.");
             }
@@ -949,10 +930,8 @@
 
         window.setTab = (tab) => { state.activeTab = tab; render(); };
         window.setMonth = (month) => { state.selectedMonth = month; render(); };
-        
         window.openLogsModal = () => { state.showLogsModal = true; render(); };
         window.closeLogsModal = () => { state.showLogsModal = false; render(); };
-
         window.toggleModal = (show) => { state.showLoginModal = show; state.loginError = ''; render(); };
         window.toggleReset = (reset) => { state.isResetting = reset; state.loginError = ''; render(); };
         window.toggleMembersViewMode = () => { state.membersViewMode = state.membersViewMode === 'panorama' ? 'monthly' : 'panorama'; render(); };
@@ -1398,9 +1377,21 @@
                                     <input type="text" id="newTransBuyerName" placeholder="Nome de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                     <input type="text" id="newTransBuyerMat" placeholder="Matrícula de quem comprou" class="bg-brand-dark border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted"/>
                                 </div>
-                                <div>
-                                    <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">Foto do Produto / Nota Fiscal (Imagem ou PDF)</label>
-                                    <input type="file" id="newTransPhoto" accept="image/*,application/pdf" onchange="handleExpenseImage(event)" class="w-full bg-brand-dark border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs md:file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
+                                
+                                <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                    <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">Observações sobre a despesa (Explicação / Situação)</label>
+                                    <textarea id="newTransObs" placeholder="Explique ou detalhe algo importante sobre esta nota/despesa..." class="w-full bg-brand-panel border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted min-h-[80px]"></textarea>
+                                </div>
+
+                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                        <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">1. Nota Fiscal / Comprovante Principal</label>
+                                        <input type="file" id="newTransPhoto" accept="image/*,application/pdf" onchange="processFile(event, 'expenseImageBase64')" class="w-full bg-brand-panel border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs md:file:text-sm file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer transition-colors"/>
+                                    </div>
+                                    <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                        <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">2. Foto Adicional (Anexo para Explicação / Observação)</label>
+                                        <input type="file" id="newTransExtraPhoto" accept="image/*,application/pdf" onchange="processFile(event, 'extraImageBase64')" class="w-full bg-brand-panel border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs md:file:text-sm file:font-bold file:bg-brand-muted/10 file:text-brand-muted hover:file:bg-brand-muted/20 cursor-pointer transition-colors"/>
+                                    </div>
                                 </div>
                             </div>
 
@@ -1491,7 +1482,7 @@
                                                             ${tx.description}
                                                             ${tx.isInstallment ? `<span class="bg-brand-accent/10 text-brand-accent text-[10px] px-1.5 py-0.5 rounded border border-brand-accent/20 whitespace-nowrap uppercase tracking-wider font-bold"><i data-lucide="layers" class="inline w-3 h-3 mr-0.5"></i> Parc. ${tx.currentInstallment}/${tx.totalInstallments}</span>` : ''}
                                                         </div>
-                                                        ${(tx.purchaseLocation || tx.purchaseLink || tx.buyerName || tx.receiptImage) ? `
+                                                        ${(tx.purchaseLocation || tx.purchaseLink || tx.buyerName || tx.receiptImage || tx.observation || tx.extraPhoto) ? `
                                                             <button onclick="openDetailsModal('${tx.id}')" title="Ver Detalhes da Compra" class="bg-brand-warning/10 text-brand-warning hover:bg-brand-warning/20 px-2 py-1 rounded-md text-[10px] md:text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors border border-brand-warning/20 hover:border-brand-warning/40 mt-1">
                                                                 <i data-lucide="search" class="w-3 h-3"></i> Transparência
                                                             </button>
@@ -1504,7 +1495,7 @@
                                                 ${state.isAdmin ? `
                                                 <td class="py-3 px-3 md:px-4">
                                                     <div class="flex items-center justify-center gap-1 md:gap-2">
-                                                        <button onclick="openEditTxModal('${tx.id}')" title="Editar Despesa/Parcelamento" class="text-blue-400 hover:bg-blue-400/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-blue-400/30">
+                                                        <button onclick="openEditTxModal('${tx.id}')" title="Editar Despesa/Detalhes" class="text-blue-400 hover:bg-blue-400/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-blue-400/30">
                                                             <i data-lucide="edit-3" class="w-4 h-4 md:w-5 md:h-5"></i>
                                                         </button>
                                                         <button onclick="openReceiptModal('${tx.id}')" title="Gerar Recibo" class="text-[#10B981] hover:bg-[#10B981]/20 p-1.5 md:p-2 rounded-lg transition-colors border border-transparent hover:border-[#10B981]/30">
@@ -1526,7 +1517,7 @@
             }
 
             else if (state.activeTab === 'audit') {
-                const txWithReceipts = state.transactions.filter(t => t.type === 'expense' && t.receiptImage).sort((a,b) => b.createdAt - a.createdAt);
+                const txWithReceipts = state.transactions.filter(t => t.type === 'expense' && (t.receiptImage || t.extraPhoto)).sort((a,b) => b.createdAt - a.createdAt);
 
                 content += `
                     <div class="bg-brand-panel rounded-2xl p-4 md:p-6 shadow-xl border border-brand-warning/20 flex flex-col min-h-[70vh]">
@@ -1545,7 +1536,7 @@
                             ${txWithReceipts.length === 0 ? `
                                 <div class="col-span-full text-center py-12 text-brand-muted bg-brand-dark/30 rounded-xl border border-dashed border-brand-muted/20">
                                     <i data-lucide="receipt" class="w-10 h-10 md:w-12 md:h-12 mx-auto mb-3 opacity-50 text-brand-warning"></i>
-                                    <p class="text-sm">Nenhuma nota fiscal ou comprovante anexado nas despesas ainda.</p>
+                                    <p class="text-sm">Nenhuma nota fiscal ou anexo registrado nas despesas ainda.</p>
                                 </div>
                             ` : txWithReceipts.map(tx => `
                                 <div class="bg-brand-dark rounded-xl border border-brand-muted/20 p-4 flex flex-col justify-between hover:border-brand-warning/40 transition-all group shadow-lg">
@@ -1566,6 +1557,18 @@
                                             <div class="flex flex-col text-right gap-0.5"><span class="text-brand-muted font-bold uppercase">Falta Pagar</span><span class="text-brand-warning font-black">${formatCurrency(Math.max(0, (tx.totalAmount || 0) - ((tx.amount || 0) * (tx.currentInstallment || 1))))}</span></div>
                                         </div>
                                         ` : ''}
+                                        
+                                        ${tx.observation ? `
+                                        <div class="mb-3">
+                                            <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="flex items-center gap-1.5 text-[10px] md:text-xs font-bold text-brand-warning bg-brand-warning/10 hover:bg-brand-warning/20 border border-brand-warning/30 px-3 py-1.5 rounded-lg transition-colors w-max">
+                                                <i data-lucide="message-square" class="w-3.5 h-3.5"></i> Observação
+                                            </button>
+                                            <div class="hidden mt-2 bg-brand-warning/5 border-l-2 border-brand-warning p-2 rounded-r flex gap-2 animate-fade-in">
+                                                <i data-lucide="info" class="w-4 h-4 text-brand-warning shrink-0 mt-0.5"></i>
+                                                <p class="text-xs text-brand-muted italic whitespace-pre-wrap">${tx.observation}</p>
+                                            </div>
+                                        </div>
+                                        ` : ''}
 
                                         <div class="text-[10px] md:text-xs text-brand-muted space-y-1.5 mb-4">
                                             <p class="flex items-center gap-1.5"><i data-lucide="calendar" class="w-3 h-3 text-brand-muted/70"></i> Data: ${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
@@ -1576,10 +1579,10 @@
                                     
                                     <div class="flex gap-2 mt-auto pt-2 border-t border-brand-muted/10">
                                         <button onclick="openDetailsModal('${tx.id}')" class="flex-1 bg-brand-warning/10 hover:bg-brand-warning/20 text-brand-warning border border-brand-warning/30 font-bold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
-                                            ${tx.receiptImage.startsWith('data:application/pdf') ? '<i data-lucide="file-text" class="w-4 h-4"></i> Ver PDF' : '<i data-lucide="image" class="w-4 h-4"></i> Ver Nota'}
+                                            <i data-lucide="search" class="w-4 h-4"></i> Visualizar Anexos (${(tx.receiptImage ? 1 : 0) + (tx.extraPhoto ? 1 : 0)})
                                         </button>
                                         ${state.isAdmin ? `
-                                        <button onclick="openEditTxModal('${tx.id}')" title="Editar Valores e Parcela" class="bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold px-3 rounded-lg transition-colors flex items-center justify-center">
+                                        <button onclick="openEditTxModal('${tx.id}')" title="Editar Valores e Anexos" class="bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold px-3 rounded-lg transition-colors flex items-center justify-center">
                                             <i data-lucide="edit-3" class="w-4 h-4"></i>
                                         </button>
                                         ` : ''}
@@ -1649,7 +1652,7 @@
                 <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[999] flex items-center justify-center p-4 overflow-y-auto">
                     <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
                         <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
-                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="w-5 h-5"></i> Detalhes da Despesa</h3>
+                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-brand-warning"><i data-lucide="search" class="w-5 h-5"></i> Detalhes e Anexos da Despesa</h3>
                             <button onclick="closeDetailsModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
                         <div class="p-4 md:p-6 overflow-y-auto flex-grow space-y-4">
@@ -1657,9 +1660,10 @@
                                 <p class="text-xs md:text-sm text-brand-muted mb-1">Descrição</p>
                                 <p class="font-bold text-white text-base md:text-lg whitespace-normal break-words">${tx.description}</p>
                             </div>
+                            
                             <div class="grid grid-cols-2 gap-4">
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Valor da Saída/Parcela</p>
+                                    <p class="text-xs md:text-sm text-brand-muted mb-1">Valor</p>
                                     <p class="font-bold text-brand-danger text-sm md:text-base">${formatCurrency(tx.amount)}</p>
                                 </div>
                                 <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
@@ -1667,6 +1671,13 @@
                                     <p class="font-bold text-white text-sm md:text-base">${tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')} às ${txTime}</p>
                                 </div>
                             </div>
+                            
+                            ${tx.observation ? `
+                            <div class="bg-brand-warning/10 p-4 rounded-xl border border-brand-warning/20">
+                                <p class="text-xs md:text-sm font-bold text-brand-warning mb-2 flex items-center gap-2"><i data-lucide="message-square" class="w-4 h-4"></i> Observações / Explicação</p>
+                                <p class="text-sm text-white italic whitespace-pre-wrap">${tx.observation}</p>
+                            </div>
+                            ` : ''}
                             
                             ${tx.isInstallment ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10 space-y-3">
@@ -1717,7 +1728,7 @@
                             
                             ${tx.receiptImage ? `
                             <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
-                                <p class="text-xs md:text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4"></i> Foto do Produto / Nota Fiscal</p>
+                                <p class="text-xs md:text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="file-text" class="w-4 h-4 text-brand-accent"></i> 1. Nota Fiscal / Comprovante Principal</p>
                                 ${tx.receiptImage.startsWith('data:application/pdf') ? `
                                     <div class="flex flex-col items-center justify-center p-4 md:p-6 border-2 border-dashed border-brand-muted/20 rounded-lg bg-brand-panel transition-all">
                                         <i data-lucide="file-text" class="w-10 h-10 md:w-12 md:h-12 text-brand-danger mb-3"></i>
@@ -1726,14 +1737,37 @@
                                             <a href="${tx.receiptImage}" download="comprovante.pdf" class="bg-brand-danger hover:bg-red-600 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
                                                 <i data-lucide="download" class="w-4 h-4 md:w-5 md:h-5"></i> Baixar PDF
                                             </a>
-                                            <button onclick="viewPDF('${tx.id}')" id="btn-view-pdf-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                            <button onclick="viewPDF('${tx.id}', 'main')" id="btn-view-pdf-main-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
                                                 <i data-lucide="eye" class="w-4 h-4 md:w-5 md:h-5"></i> Visualizar
                                             </button>
                                         </div>
                                     </div>
-                                    <div id="pdf-viewer-container-${tx.id}" class="hidden w-full h-[50vh] md:h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
+                                    <div id="pdf-viewer-container-main-${tx.id}" class="hidden w-full h-[50vh] md:h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
                                 ` : `
-                                    <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal ou Produto" />
+                                    <img src="${tx.receiptImage}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Nota Fiscal" />
+                                `}
+                            </div>
+                            ` : ''}
+
+                            ${tx.extraPhoto ? `
+                            <div class="bg-brand-dark p-4 rounded-xl border border-brand-muted/10">
+                                <p class="text-xs md:text-sm text-brand-muted mb-3 flex items-center gap-2"><i data-lucide="image" class="w-4 h-4 text-brand-warning"></i> 2. Foto Adicional (Explicação da Situação / Observação)</p>
+                                ${tx.extraPhoto.startsWith('data:application/pdf') ? `
+                                    <div class="flex flex-col items-center justify-center p-4 md:p-6 border-2 border-dashed border-brand-muted/20 rounded-lg bg-brand-panel transition-all">
+                                        <i data-lucide="file-text" class="w-10 h-10 md:w-12 md:h-12 text-brand-danger mb-3"></i>
+                                        <p class="text-white font-bold mb-4 text-sm md:text-base">Documento PDF Adicional</p>
+                                        <div class="flex flex-col sm:flex-row gap-2 md:gap-3 w-full justify-center">
+                                            <a href="${tx.extraPhoto}" download="anexo-adicional.pdf" class="bg-brand-danger hover:bg-red-600 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                                <i data-lucide="download" class="w-4 h-4 md:w-5 md:h-5"></i> Baixar PDF
+                                            </a>
+                                            <button onclick="viewPDF('${tx.id}', 'extra')" id="btn-view-pdf-extra-${tx.id}" class="bg-brand-dark border border-brand-muted/30 hover:bg-brand-muted/10 text-white font-bold py-2 px-4 md:px-6 rounded-lg transition-colors flex items-center justify-center gap-2 text-xs md:text-sm">
+                                                <i data-lucide="eye" class="w-4 h-4 md:w-5 md:h-5"></i> Visualizar
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="pdf-viewer-container-extra-${tx.id}" class="hidden w-full h-[50vh] md:h-[60vh] mt-4 rounded-xl overflow-hidden border-2 border-brand-muted/20 bg-white"></div>
+                                ` : `
+                                    <img src="${tx.extraPhoto}" class="w-full rounded-lg border border-brand-muted/20 shadow-md" alt="Foto Adicional Explicativa" />
                                 `}
                             </div>
                             ` : ''}
@@ -1748,7 +1782,7 @@
                 <div class="fixed inset-0 bg-black/90 backdrop-blur-sm z-[999] flex items-center justify-center p-4 overflow-y-auto">
                     <div class="bg-brand-panel rounded-2xl w-full max-w-lg shadow-2xl border border-brand-muted/20 relative my-8 flex flex-col max-h-[90vh]">
                         <div class="p-4 border-b border-brand-muted/20 flex justify-between items-center bg-brand-dark rounded-t-2xl shrink-0">
-                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-blue-400"><i data-lucide="edit" class="w-5 h-5"></i> Editar Despesa</h3>
+                            <h3 class="font-bold text-base md:text-lg flex items-center gap-2 text-blue-400"><i data-lucide="edit" class="w-5 h-5"></i> Editar Despesa e Anexos</h3>
                             <button onclick="closeEditTxModal()" class="text-brand-muted hover:text-white p-2"><i data-lucide="x" class="w-5 h-5"></i></button>
                         </div>
                         <div class="p-4 md:p-6 overflow-y-auto flex-grow">
@@ -1790,6 +1824,25 @@
                                     </div>
                                 </div>
 
+                                <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                    <label class="block text-xs md:text-sm text-brand-muted mb-2 font-medium">Observações sobre a despesa (Explicação / Situação)</label>
+                                    <textarea id="editTransObs" placeholder="Edite ou adicione uma observação..." class="w-full bg-brand-panel border border-brand-muted/20 outline-none focus:ring-1 focus:ring-brand-warning rounded-xl px-4 py-3 text-white placeholder-brand-muted min-h-[80px]">${tx.observation || ''}</textarea>
+                                </div>
+
+                                <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                    <label class="block text-xs md:text-sm text-brand-muted font-medium mb-1">1. Trocar Nota Fiscal / Comprovante Principal (Opcional)</label>
+                                    <p class="text-[10px] text-brand-muted/70 mb-2 italic">Deixe vazio para manter a nota atual.</p>
+                                    <input type="file" accept="image/*,application/pdf" onchange="processFile(event, 'editExpenseImageBase64')" class="w-full bg-brand-panel border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-brand-warning/10 file:text-brand-warning hover:file:bg-brand-warning/20 cursor-pointer"/>
+                                    ${tx.receiptImage ? `<p class="text-[10px] text-brand-success mt-2 font-bold"><i data-lucide="check-circle" class="inline w-3 h-3"></i> Nota fiscal existente cadastrada.</p>` : ''}
+                                </div>
+
+                                <div class="bg-brand-dark p-3 rounded-xl border border-brand-muted/20">
+                                    <label class="block text-xs md:text-sm text-brand-muted font-medium mb-1">2. Trocar ou Adicionar Foto Explicativa Adicional (Opcional)</label>
+                                    <p class="text-[10px] text-brand-muted/70 mb-2 italic">Anexe uma foto separada para ilustrar a observação/situação.</p>
+                                    <input type="file" accept="image/*,application/pdf" onchange="processFile(event, 'editExtraImageBase64')" class="w-full bg-brand-panel border border-brand-muted/20 outline-none rounded-xl px-4 py-2 text-brand-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-brand-muted/10 file:text-brand-muted hover:file:bg-brand-muted/20 cursor-pointer"/>
+                                    ${tx.extraPhoto ? `<p class="text-[10px] text-brand-success mt-2 font-bold"><i data-lucide="check-circle" class="inline w-3 h-3"></i> Foto adicional existente cadastrada.</p>` : ''}
+                                </div>
+
                                 <button type="submit" class="w-full bg-brand-accent hover:bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg transition-all flex justify-center items-center gap-2 mt-4">
                                     <i data-lucide="save" class="w-5 h-5"></i> Salvar Alterações
                                 </button>
@@ -1805,9 +1858,7 @@
                 let matInfo = "N/A";
                 let displayName = tx.description; 
                 
-                // Raio-X Inteligente para recibos antigos: Cruza o nome da transação velha com o cadastro atualizado
                 const memberRef = matchMemberToTx(tx);
-
                 if (memberRef) {
                     matInfo = memberRef.matricula;
                     displayName = memberRef.rank ? `${memberRef.rank} ${memberRef.name}` : memberRef.name;
