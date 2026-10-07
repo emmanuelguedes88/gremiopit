@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getFirestore, collection, onSnapshot, addDoc, doc, deleteDoc, updateDoc } from 'firebase/firestore';
-import { getAuth, signInAnonymously, signInWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getAuth, signInAnonymously, signInWithEmailAndPassword, sendPasswordResetEmail, onAuthStateChanged, signOut, signInWithCustomToken } from 'firebase/auth';
 import { 
   LayoutDashboard, Users, Landmark, ClipboardList, Lock, Unlock, 
   ShieldHalf, Share2, CalendarDays, Wallet, Activity, TrendingUp, 
@@ -12,21 +12,25 @@ import {
   Save, Mail, EyeOff, CheckCircle, ExternalLink, PenTool, Send, Loader2
 } from 'lucide-react';
 
-// Forçando o uso EXCLUSIVO do seu banco de dados (ignorando o ambiente de testes do editor)
-const firebaseConfig = {
-  apiKey: "AIzaSyBs6l1WQx4ePd2IkY0RdfxR75XCJm13m08",
-  authDomain: "gremiopit-3250c.firebaseapp.com",
-  projectId: "gremiopit-3250c",
-  storageBucket: "gremiopit-3250c.firebasestorage.app",
-  messagingSenderId: "22286724105",
-  appId: "1:22286724105:web:836befe594b969ccf09cd8",
-  measurementId: "G-2CME0BPYLQ"
-};
+// Configuração inteligente: usa o ambiente de testes do editor para o preview funcionar sem erros.
+// Quando você hospedar ou rodar fora daqui, usará EXCLUSIVAMENTE o seu banco de dados.
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "AIzaSyBs6l1WQx4ePd2IkY0RdfxR75XCJm13m08",
+      authDomain: "gremiopit-3250c.firebaseapp.com",
+      projectId: "gremiopit-3250c",
+      storageBucket: "gremiopit-3250c.firebasestorage.app",
+      messagingSenderId: "22286724105",
+      appId: "1:22286724105:web:836befe594b969ccf09cd8",
+      measurementId: "G-2CME0BPYLQ"
+    };
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
-const APP_ID = 'gremiopit-v1'; // Forçando o mesmo ID usado na versão HTML para recuperar os dados originais
+// Mantemos o APP_ID fixo como você definiu para acessar os mesmos dados
+const APP_ID = 'gremiopit-v1';
 
 const MONTH_MAP = {
   'Jan': 'Janeiro', 'Fev': 'Fevereiro', 'Mar': 'Março', 'Abr': 'Abril',
@@ -109,6 +113,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (err) {
+        console.error("Auth error:", err);
+        setDbError('permission');
+      }
+    };
+    initAuth();
+
     const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
       if (currentUser) {
         setUser(currentUser);
@@ -116,9 +130,6 @@ export default function App() {
       } else {
         setUser(null);
         setIsAdmin(false);
-        signInAnonymously(auth).catch((err) => {
-          setDbError('auth-anon-disabled');
-        });
       }
     });
     return () => unsubscribeAuth();
@@ -350,15 +361,16 @@ export default function App() {
 
       if (newStatus) {
         if (!existingTx) {
+          const timestamp = Date.now();
           await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'transactions'), {
             type: 'income',
             description: member.name, 
             amount: 10,
             month: month,
-            date: new Date().toLocaleDateString('pt-BR'),
+            date: new Date(timestamp).toLocaleString('pt-BR'),
             isAuto: true,
             memberId: member.id,
-            createdAt: Date.now()
+            createdAt: timestamp
           });
           logAction(`Pagamento confirmado: ${member.rank || ''} ${member.name} (${month})`);
         }
@@ -385,11 +397,12 @@ export default function App() {
     
     if (!desc || !amount || !user) return;
     
-    let formattedDate = new Date().toLocaleDateString('pt-BR');
     let timestamp = Date.now();
+    let formattedDate = new Date(timestamp).toLocaleString('pt-BR');
+    
     if (dateInput) {
       const d = new Date(dateInput);
-      formattedDate = d.toLocaleDateString('pt-BR');
+      formattedDate = d.toLocaleString('pt-BR');
       timestamp = d.getTime();
     }
 
@@ -584,11 +597,15 @@ export default function App() {
           return;
         } else { throw new Error("Share API files not supported"); }
       } catch(e) { 
+        // Correção definitiva do Download para iPhone/Safari e Firefox
         const url = URL.createObjectURL(generatedReceiptFile);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'recibo-pit.png';
+        a.download = `recibo-pit-${new Date().getTime()}.png`;
+        document.body.appendChild(a); 
         a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
         customAlert('Recibo salvo no seu dispositivo! Agora é só anexar no WhatsApp.');
         return;
       }
@@ -600,13 +617,22 @@ export default function App() {
     }
 
     setIsGeneratingReceipt(true);
-    await new Promise(r => setTimeout(r, 200)); // wait for UI to settle
+    // Tempo aumentado para garantir que modais e a tela de recibo estejam totalmente carregados no HTML
+    await new Promise(r => setTimeout(r, 500)); 
     
     try {
       const element = receiptAreaRef.current;
-      const canvas = await window.html2canvas(element, { scale: 2, backgroundColor: '#ffffff', useCORS: true });
+      if (!element) throw new Error("Área do recibo não encontrada no sistema.");
+
+      const canvas = await window.html2canvas(element, { 
+        scale: 2, 
+        backgroundColor: '#ffffff', 
+        useCORS: true,
+        allowTaint: true 
+      });
       
       canvas.toBlob(async (blob) => {
+        if (!blob) throw new Error("Falha ao gerar o arquivo de imagem.");
         const file = new File([blob], 'recibo-pit.png', { type: 'image/png' });
         setGeneratedReceiptFile(file); 
         setIsGeneratingReceipt(false);
@@ -614,7 +640,8 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setIsGeneratingReceipt(false);
-      customAlert("Ocorreu um erro ao gerar a imagem do recibo.");
+      // Mensagem mais clara se houver falha
+      customAlert("Ocorreu um erro ao gerar a imagem: " + (err.message || "Tente novamente."));
     }
   };
 
@@ -677,7 +704,7 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Main Content */}
+      {/* Main Content Area */}
       <main className="flex-1 p-4 md:p-10 overflow-y-auto pb-24 md:pb-10 z-10 relative w-full">
         {/* Mobile Header */}
         <div className="flex md:hidden justify-between items-center mb-6 bg-[#0F172A]/80 p-3 rounded-xl border border-white/5 backdrop-blur-md">
@@ -697,8 +724,10 @@ export default function App() {
           <div className="mb-6 bg-yellow-500/10 border border-yellow-500/40 text-yellow-500 p-4 rounded-xl flex items-start gap-3">
             <Info className="w-6 h-6 flex-shrink-0 mt-1" />
             <div>
-              <h4 className="font-bold text-lg">Acesso Bloqueado no Firebase!</h4>
-              <p className="text-sm opacity-90 mt-1">As permissões de segurança ainda estão negadas. Verifique o console.</p>
+              <h4 className="font-bold text-lg">Leitura Bloqueada!</h4>
+              <p className="text-sm opacity-90 mt-1">
+                Para o aplicativo funcionar com as suas Regras de Segurança, você deve ativar o <b>Login Anônimo (Anonymous)</b> na aba de Autenticação do Firebase, ou fazer o <b>Acesso Admin</b>.
+              </p>
             </div>
           </div>
         )}
@@ -738,7 +767,7 @@ export default function App() {
         {activeTab === 'dashboard' && (
           <>
             <div className="flex flex-col gap-4 mb-8">
-                {/* Prioridade 1: Caixa Total - Maior e mais destacado */}
+                {/* Prioridade 1: Caixa Total */}
                 <div className="bg-gradient-to-br from-[#0F172A] to-[#1E293B] rounded-3xl p-6 md:p-10 shadow-2xl border border-[#3B82F6]/40 relative overflow-hidden flex flex-col justify-center min-h-[160px]">
                     <div className="absolute -right-4 -bottom-4 opacity-10">
                         <Wallet size={200} />
@@ -751,7 +780,7 @@ export default function App() {
                     </p>
                 </div>
 
-                {/* Prioridade 2: Receitas e Despesas - Destaques coloridos */}
+                {/* Prioridade 2: Receitas e Despesas */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="bg-[#0F172A] rounded-2xl p-5 md:p-6 border-l-4 border-[#10B981] shadow-xl flex items-center justify-between group hover:bg-[#1E293B] transition-colors">
                         <div>
@@ -773,7 +802,7 @@ export default function App() {
                     </div>
                 </div>
 
-                {/* Prioridade 3: Saldo Anterior - Mais discreto */}
+                {/* Prioridade 3: Saldo Anterior */}
                 <div className="bg-[#020617] rounded-xl p-4 md:p-5 border border-[#334155]/40 flex items-center justify-between opacity-80 shadow-inner">
                     <div className="flex items-center gap-3">
                         <History className="text-[#94A3B8]" size={20} />
@@ -866,7 +895,6 @@ export default function App() {
                 <div className="flex flex-col md:flex-row gap-3">
                   <div className="flex-1 relative">
                     <Search className="absolute left-3 top-3 text-[#94A3B8]" size={20}/>
-                    {/* AQUI ESTÁ A CORREÇÃO: Input Controlado pelo React não perde o foco ao digitar */}
                     <input 
                       type="text" 
                       value={memberSearchQuery} 
@@ -1055,7 +1083,7 @@ export default function App() {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="text-[#94A3B8] border-b border-[#334155]/30 text-xs md:text-sm bg-[#020617]/50">
-                        <th className="py-3 px-3 md:px-4 font-medium">Data</th>
+                        <th className="py-3 px-3 md:px-4 font-medium">Data/Hora</th>
                         <th className="py-3 px-3 md:px-4 font-medium">Descrição</th>
                         <th className="py-3 px-3 md:px-4 font-medium text-right">Valor</th>
                         {isAdmin && <th className="py-3 px-3 md:px-4 font-medium text-center">Ações</th>}
@@ -1071,7 +1099,7 @@ export default function App() {
                           else if (mRef) displayName = mRef.name;
                           return (
                             <tr key={tx.id} className="border-b border-[#334155]/10 hover:bg-[#020617]/50 transition-colors">
-                              <td className="py-3 px-3 md:px-4 text-xs md:text-sm text-[#94A3B8] whitespace-nowrap">{tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                              <td className="py-3 px-3 md:px-4 text-xs md:text-sm text-[#94A3B8] whitespace-nowrap">{tx.date || new Date(tx.createdAt).toLocaleString('pt-BR')}</td>
                               <td className="py-3 px-3 md:px-4"><p className="font-bold text-white text-xs md:text-base leading-tight">{displayName}</p></td>
                               <td className="py-3 px-3 md:px-4 text-right font-bold text-[#10B981] text-xs md:text-base whitespace-nowrap">+{formatCurrency(tx.amount)}</td>
                               {isAdmin && (
@@ -1100,7 +1128,7 @@ export default function App() {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="text-[#94A3B8] border-b border-[#334155]/30 text-xs md:text-sm bg-[#020617]/50">
-                        <th className="py-3 px-3 md:px-4 font-medium">Data</th>
+                        <th className="py-3 px-3 md:px-4 font-medium">Data/Hora</th>
                         <th className="py-3 px-3 md:px-4 font-medium">Descrição</th>
                         <th className="py-3 px-3 md:px-4 font-medium text-right">Valor</th>
                         {isAdmin && <th className="py-3 px-3 md:px-4 font-medium text-center">Ações</th>}
@@ -1111,7 +1139,7 @@ export default function App() {
                         <tr><td colSpan={isAdmin?4:3} className="py-10 text-center text-[#94A3B8]">Nenhuma despesa neste mês.</td></tr> :
                         filteredTransactions.filter(t=>t.type==='expense').slice().reverse().map(tx => (
                           <tr key={tx.id} className="border-b border-[#334155]/10 hover:bg-[#020617]/50 transition-colors">
-                            <td className="py-3 px-3 md:px-4 text-xs md:text-sm text-[#94A3B8] whitespace-nowrap">{tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</td>
+                            <td className="py-3 px-3 md:px-4 text-xs md:text-sm text-[#94A3B8] whitespace-nowrap">{tx.date || new Date(tx.createdAt).toLocaleString('pt-BR')}</td>
                             <td className="py-3 px-3 md:px-4">
                               <div className="flex flex-col items-start gap-1">
                                 <div className="font-bold text-white text-xs md:text-base leading-tight flex flex-wrap items-center gap-2">
@@ -1177,7 +1205,7 @@ export default function App() {
                       </div>
                     )}
                     <div className="text-[10px] md:text-xs text-[#94A3B8] space-y-1.5 mb-4">
-                      <p className="flex items-center gap-1.5"><Calendar size={12}/> {tx.date || new Date(tx.createdAt).toLocaleDateString('pt-BR')}</p>
+                      <p className="flex items-center gap-1.5"><Calendar size={12}/> {tx.date || new Date(tx.createdAt).toLocaleString('pt-BR')}</p>
                       {tx.purchaseLocation && <p className="flex items-center gap-1.5 break-words"><MapPin size={12}/> {tx.purchaseLocation}</p>}
                       {tx.buyerName && <p className="flex items-center gap-1.5 break-words"><User size={12}/> {tx.buyerName}</p>}
                     </div>
@@ -1259,7 +1287,7 @@ export default function App() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-[#020617] p-4 rounded-xl border border-[#334155]/30"><p className="text-sm text-[#94A3B8]">Valor</p><p className="font-bold text-red-500">{formatCurrency(detailsTx.amount)}</p></div>
-                <div className="bg-[#020617] p-4 rounded-xl border border-[#334155]/30"><p className="text-sm text-[#94A3B8]">Data</p><p className="font-bold">{detailsTx.date || new Date(detailsTx.createdAt).toLocaleDateString()}</p></div>
+                <div className="bg-[#020617] p-4 rounded-xl border border-[#334155]/30"><p className="text-sm text-[#94A3B8]">Data</p><p className="font-bold">{detailsTx.date || new Date(detailsTx.createdAt).toLocaleString('pt-BR')}</p></div>
               </div>
               {detailsTx.observation && (
                 <div className="bg-yellow-500/10 p-4 rounded-xl border border-yellow-500/30">
@@ -1341,30 +1369,39 @@ export default function App() {
                         <p className="text-green-500 font-bold flex items-center justify-center gap-2"><CheckCircle size={20}/> Imagem Pronta!</p>
                     </div>
                   ) : (
-                    <div ref={receiptAreaRef} className="bg-white text-black p-6 md:p-8 rounded-sm shadow-sm relative overflow-hidden font-sans">
-                        <div className="text-center border-b-2 border-gray-300 pb-4 mb-4">
-                        <h2 className="text-lg md:text-xl font-black uppercase tracking-wider text-gray-800">Grêmio PIT</h2>
-                        <p className="text-xs md:text-sm font-bold text-gray-500 tracking-widest mt-1">RECIBO DE {receiptTx.type === 'income' ? 'ARRECADAÇÃO' : 'DESPESA'}</p>
+                    <div ref={receiptAreaRef} className="bg-[#FFFFFF] text-[#000000] p-6 md:p-8 rounded-sm shadow-sm relative font-sans">
+                        <div className="text-center border-b-2 border-[#D1D5DB] pb-4 mb-4">
+                        <h2 className="text-lg md:text-xl font-black uppercase tracking-wider text-[#1F2937]">Grêmio PIT</h2>
+                        <p className="text-xs md:text-sm font-bold text-[#6B7280] tracking-widest mt-1">RECIBO DE {receiptTx.type === 'income' ? 'ARRECADAÇÃO' : 'DESPESA'}</p>
                         </div>
                         <div className="space-y-3 text-xs md:text-sm font-medium">
-                        <div className="flex justify-between items-end border-b border-gray-100 pb-2">
-                            <span className="text-gray-500">Valor:</span><span className={`font-black text-base md:text-lg ${receiptTx.type==='income'?'text-green-700':'text-red-700'}`}>{formatCurrency(receiptTx.amount)}</span>
+                        <div className="flex justify-between items-end border-b border-[#F3F4F6] pb-2">
+                            <span className="text-[#6B7280]">Valor:</span><span className={`font-black text-base md:text-lg ${receiptTx.type==='income'?'text-[#15803D]':'text-[#B91C1C]'}`}>{formatCurrency(receiptTx.amount)}</span>
                         </div>
-                        <div className="flex justify-between items-end border-b border-gray-100 pb-2">
-                            <span className="text-gray-500">Ref:</span><span className="font-bold text-gray-800 text-right uppercase">{matchMemberToTx(receiptTx)?.name || receiptTx.description}</span>
+                        <div className="flex justify-between items-end border-b border-[#F3F4F6] pb-2">
+                            <span className="text-[#6B7280]">Ref:</span>
+                            <span className="font-bold text-[#1F2937] text-right uppercase">
+                              {(() => {
+                                const m = matchMemberToTx(receiptTx);
+                                return m ? `${m.rank ? m.rank + ' ' : ''}${m.name}`.trim() : receiptTx.description;
+                              })()}
+                            </span>
                         </div>
-                        <div className="flex justify-between items-end border-b border-gray-100 pb-2">
-                            <span className="text-gray-500">Data:</span><span className="font-bold text-gray-800">{receiptTx.date || new Date().toLocaleDateString()}</span>
+                        <div className="flex justify-between items-end border-b border-[#F3F4F6] pb-2">
+                            <span className="text-[#6B7280]">Data/Hora:</span>
+                            <span className="font-bold text-[#1F2937] text-right">
+                              {new Date(receiptTx.createdAt || Date.now()).toLocaleString('pt-BR')}
+                            </span>
                         </div>
                         <div className="flex justify-between items-end pb-2">
-                            <span className="text-gray-500">Competência:</span><span className="font-bold text-gray-800 uppercase">{receiptTx.month}</span>
+                            <span className="text-[#6B7280]">Competência:</span><span className="font-bold text-[#1F2937] uppercase">{receiptTx.month}</span>
                         </div>
                         </div>
-                        <div className="mt-8 pt-4 border-t-2 border-gray-300 text-center flex flex-col items-center">
+                        <div className="mt-8 pt-4 border-t-2 border-[#D1D5DB] text-center flex flex-col items-center">
                         {adminReceiptInfo.signatureDataUrl ? <img src={adminReceiptInfo.signatureDataUrl} className="h-16 object-contain mb-1" /> : <div className="h-16 mb-1"></div>}
-                        <div className="w-48 border-t border-gray-800 mb-2"></div>
-                        <p className="font-bold text-gray-900 uppercase text-xs">{adminReceiptInfo.name || 'Admin'}</p>
-                        <p className="text-xs text-gray-500 font-bold">Mat: {adminReceiptInfo.matricula}</p>
+                        <div className="w-48 border-t border-[#1F2937] mb-2"></div>
+                        <p className="font-bold text-[#111827] uppercase text-xs">{adminReceiptInfo.name || 'Admin'}</p>
+                        <p className="text-xs text-[#6B7280] font-bold">Mat: {adminReceiptInfo.matricula}</p>
                         </div>
                     </div>
                   )}
